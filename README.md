@@ -4,7 +4,7 @@ An intelligent, local Python engine that generates indoor cycling workouts —
 single sessions and multi-session progressions — as ready-to-import
 [intervals.icu](https://intervals.icu) workout files (`.md`).
 
-**Version:** 0.4.1
+**Version:** 0.5.0
 **Status:** Core engine functional — no web/app frontend yet (CLI only)
 **License:** Private / All rights reserved (no open-source license applied)
 
@@ -114,6 +114,29 @@ All model settings live in `engine/llm_config.py`.
   Before trusting a model id, check
   https://ai.google.dev/gemini-api/docs/deprecations.
 
+## Training load (TSS)
+
+The engine reports the load of every session the way Intervals.icu computes
+planned workouts, so the number you see is the one your calendar will show:
+
+- **Power:** Normalized Power with the 30-second rolling average (ramps
+  followed second by second), `TSS = hours × IF² × 100`. Checked against 85
+  real planned workouts in Intervals.icu: 0.5 TSS off on average, 1.4 at
+  most.
+- **Heart rate:** HRSS (normalised TRIMP), the method the Intervals.icu
+  workout builder uses for HR workouts. It needs your LTHR, max HR and
+  resting HR (see below); without them the load is shown as approximate.
+
+When you ask for a TSS or IF, the engine fixes the session's structure first
+and then solves the one work intensity that lands it (spec Section 16).
+
+## Your thresholds (`athlete.yaml`)
+
+Copy `athlete.example.yaml` to `athlete.yaml` (git-ignored) and fill in your
+values — the same ones as in your Intervals.icu settings. Every field is
+optional. The workouts stay in % of threshold; the numbers are used only
+inside the engine (today: the HR-mode load).
+
 ## Requirements
 
 - Python 3.10+ (tested on 3.14)
@@ -170,7 +193,7 @@ Natural-language request ("tempo de 50 minutos")
         ├──► structure.py      ── mandatory session structure (warmup/prep/
         │                          cooldown; ramps for power, staircases for HR)
         │
-        ├──► tss.py            ── TSS/IF/NP algebra, feasibility detection
+        ├──► tss.py            ── NP (30 s rolling) / HRSS load, as Intervals.icu
         │
         ├──► render.py         ── compiles to literal intervals.icu syntax +
         │                          output-validation gate
@@ -195,7 +218,8 @@ cycling-workout-engine-gemini/
 │   ├── zones.py              # Friel power/HR zones (fixed data)
 │   ├── rpe.py                # RPE derivation (Borg CR10)
 │   ├── render.py             # intervals.icu syntax + output-validation gate
-│   ├── tss.py                # TSS/IF/NP math, feasibility
+│   ├── tss.py                # NP (30 s rolling), HRSS, TSS algebra, solver
+│   ├── athlete_settings.py   # reads athlete.yaml (your thresholds)
 │   ├── catalog.py            # SQLite memory + library
 │   ├── models.py             # request/session dataclasses
 │   ├── structure.py          # mandatory session structure
@@ -214,7 +238,8 @@ cycling-workout-engine-gemini/
 └── tests/
     ├── test_core.py          # deterministic-core tests (incl. hand-verified TSS)
     ├── test_phase2.py        # reasoning-layer integration tests via mock transport
-    └── test_cleanup_v041.py  # HR staircase content, unknown fields, model settings
+    ├── test_cleanup_v041.py  # HR staircase content, unknown fields, model settings
+    └── test_load_v050.py     # load methods, athlete.yaml
 ```
 
 ## Testing
@@ -223,10 +248,10 @@ cycling-workout-engine-gemini/
 python -m pytest -q
 ```
 
-94 tests, all passing without any API key (a mock transport stands in for
+112 tests, all passing without any API key (a mock transport stands in for
 the real Gemini API). GitHub Actions runs them on every push
 (`.github/workflows/tests.yml`). Coverage includes hand-calculated TSS/IF
-reference cases, RPE derivation, output-syntax validation, end-to-end
+reference cases (NP with the rolling window, HRSS), RPE derivation, output-syntax validation, end-to-end
 generation for both power and heart-rate modes, budget-conservation
 enforcement, TSS-target verification, HR-staircase content validation,
 unknown-field rejection, and the model settings.

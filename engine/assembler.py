@@ -5,17 +5,19 @@ real (rounded) TSS estimate (spec 16.4).
 """
 
 from __future__ import annotations
+from dataclasses import dataclass
 from .models import Step, RepeatBlock, Warmup, GeneratedSession, Feasibility
 from .render import validate_output
 from . import tss as tssmod
 
 
 def _segments_from_step(s: Step) -> list[tssmod.Segment]:
-    """Convert a step to NP segments. Ramps use the midpoint power fraction."""
+    """Convert a step to load segments. A ramp keeps both ends: its target
+    moves linearly second by second, as the platform executes it."""
     if s.is_ramp:
-        frac = ((s.ramp_start + s.ramp_end) / 2.0) / 100.0
-    else:
-        frac = ((s.flat_low + s.flat_high) / 2.0) / 100.0
+        return [tssmod.Segment(float(s.duration_seconds), s.ramp_start / 100.0,
+                               s.ramp_end / 100.0)]
+    frac = ((s.flat_low + s.flat_high) / 2.0) / 100.0
     return [tssmod.Segment(float(s.duration_seconds), frac)]
 
 
@@ -31,21 +33,48 @@ def _collect_segments(elements: list) -> list[tssmod.Segment]:
     return segs
 
 
-def compute_tss_if(warmup: Warmup, main_set: list, cooldown: list,
-                   mode: str = "power") -> tuple[float, float]:
-    """Real TSS/IF of the fully-built (rounded) session — spec 16.4: report
-    the real number of what was built, labeled as a design-time estimate.
+@dataclass(frozen=True)
+class LoadEstimate:
+    """Design-time load of a built session (spec 16.4/16.6).
+    method: "np_30s" (power) | "hrss" (HR, athlete's own LTHR/max/resting)
+    | "hrss_typical" (HR, typical profile stood in: approximate)."""
+    tss: float
+    intensity_factor: float
+    method: str
 
-    Power mode: simplified-NP math (spec 16.2). HR mode: hrTSS-type estimate
-    (spec 16.6) — %LTHR mapped to equivalent IF per segment; NP does not
-    apply to heart rate."""
-    segs: list[tssmod.Segment] = []
-    segs += _warmup_segments(warmup)
-    segs += _collect_segments(main_set)
-    segs += _collect_segments(cooldown)
+    @property
+    def approximate(self) -> bool:
+        return self.method == "hrss_typical"
+
+
+def session_segments(warmup: Warmup, main_set: list,
+                     cooldown: list) -> list[tssmod.Segment]:
+    """The whole session as ordered load segments."""
+    return (_warmup_segments(warmup) + _collect_segments(main_set)
+            + _collect_segments(cooldown))
+
+
+def compute_load(warmup: Warmup, main_set: list, cooldown: list,
+                 mode: str = "power",
+                 hr_profile: tssmod.HrProfile | None = None) -> LoadEstimate:
+    """Real load of the fully-built (rounded) session — spec 16.4: report
+    the number of what was built, labeled as a design-time estimate.
+    Power: NP with the 30 s rolling average. HR: HRSS (spec 16.6)."""
+    segs = session_segments(warmup, main_set, cooldown)
     if mode == "hr":
-        return tssmod.hr_session_tss(segs)
-    return tssmod.session_tss(segs), tssmod.intensity_factor(segs)
+        load, eq_if, exact = tssmod.hr_session_tss(segs, hr_profile)
+        return LoadEstimate(load, eq_if, "hrss" if exact else "hrss_typical")
+    return LoadEstimate(tssmod.session_tss(segs),
+                        tssmod.intensity_factor(segs), "np_30s")
+
+
+def compute_tss_if(warmup: Warmup, main_set: list, cooldown: list,
+                   mode: str = "power",
+                   hr_profile: tssmod.HrProfile | None = None
+                   ) -> tuple[float, float]:
+    """(TSS, IF) of the built session; see compute_load."""
+    est = compute_load(warmup, main_set, cooldown, mode, hr_profile)
+    return est.tss, est.intensity_factor
 
 
 def _warmup_segments(warmup: Warmup) -> list[tssmod.Segment]:

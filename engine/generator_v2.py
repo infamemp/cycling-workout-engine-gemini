@@ -67,6 +67,7 @@ def generate_single_v2(req: GenerationRequest, *,
     warmup = cooldown = main_set = None
     markdown = None
     est_tss = est_if = None
+    tss_method = "np_30s"
 
     # --- Session-level algebra (spec 16.1, pure math, engine's territory) ---
     # TSS + IF given without a duration -> the duration is implied; derive it.
@@ -130,13 +131,15 @@ def generate_single_v2(req: GenerationRequest, *,
             # work intensity — in closed form. Never left to guessing.
             if req.mode == "power" and (req.target_tss is not None
                                         or req.target_if is not None):
-                structure_segments = [
-                    tssmod.Segment(float(warmup_s),
-                                   sum(_WARMUP_RAMP) / 2.0 / 100.0),
+                before_segments = [
+                    tssmod.Segment(float(warmup_s), _WARMUP_RAMP[0] / 100.0,
+                                   _WARMUP_RAMP[1] / 100.0),
                     tssmod.Segment(float(prep_s),
                                    (struct.PREP_LOW + struct.PREP_HIGH) / 2.0 / 100.0),
-                    tssmod.Segment(float(cooldown_s),
-                                   sum(_COOLDOWN_RAMP) / 2.0 / 100.0),
+                ]
+                after_segments = [
+                    tssmod.Segment(float(cooldown_s), _COOLDOWN_RAMP[0] / 100.0,
+                                   _COOLDOWN_RAMP[1] / 100.0),
                 ]
                 if req.target_if is not None:
                     np_target = req.target_if
@@ -149,7 +152,8 @@ def generate_single_v2(req: GenerationRequest, *,
                         candidate, mode=req.mode,
                         dominant_zone=req.requested_zone,
                         np_target_frac=np_target,
-                        structure_segments=structure_segments,
+                        before_segments=before_segments,
+                        after_segments=after_segments,
                     )
                 except IntensityInfeasible as e:
                     raise ProposalRejected(str(e))
@@ -165,7 +169,9 @@ def generate_single_v2(req: GenerationRequest, *,
 
             m = build_main_set(req.mode, candidate)
             md = assembler.build_markdown(w, m, c)
-            t_tss, t_if = assembler.compute_tss_if(w, m, c, mode=req.mode)
+            load = assembler.compute_load(w, m, c, mode=req.mode,
+                                          hr_profile=req.athlete.hr_profile())
+            t_tss, t_if = load.tss, load.intensity_factor
 
             # Target verification (spec 16.3): only meaningful once the FULL
             # session (incl. warmup/cooldown) is built, since those contribute
@@ -179,6 +185,7 @@ def generate_single_v2(req: GenerationRequest, *,
 
             proposal, warmup, cooldown, main_set = candidate, w, c, m
             markdown, est_tss, est_if = md, t_tss, t_if
+            tss_method = load.method
             break
         except ProposalRejected as e:
             last_error = str(e)
@@ -202,6 +209,7 @@ def generate_single_v2(req: GenerationRequest, *,
         feasibility=Feasibility(satisfied=True),
         summary=summary, markdown_output=markdown,
         progression_id=progression_id,
+        tss_method=tss_method,
     )
 
     if catalog is not None:

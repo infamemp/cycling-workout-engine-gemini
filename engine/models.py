@@ -38,6 +38,19 @@ class Athlete:
     cp_watts: Optional[float] = None        # = FTP display label
     w_prime_joules: Optional[float] = None
     lthr_bpm: Optional[float] = None
+    # HR-mode load (HRSS, spec 16.6) needs all three heart-rate values;
+    # without them the engine uses a typical profile and says so.
+    max_hr_bpm: Optional[float] = None
+    resting_hr_bpm: Optional[float] = None
+
+    def hr_profile(self):
+        """The athlete's HrProfile, or None when any value is missing."""
+        from .tss import HrProfile
+        if self.lthr_bpm and self.max_hr_bpm and self.resting_hr_bpm:
+            prof = HrProfile(float(self.lthr_bpm), float(self.max_hr_bpm),
+                             float(self.resting_hr_bpm))
+            return prof if prof.valid() else None
+        return None
 
 
 @dataclass
@@ -115,3 +128,6 @@ class GeneratedSession:
     markdown_output: str
     progression_id: Optional[str] = None
     generation_seed: Optional[int] = None
+    # How estimated_tss was computed: "np_30s" (power), "hrss" (HR with the
+    # athlete's own values) or "hrss_typical" (HR, typical profile: approximate)
+    tss_method: str = "np_30s"

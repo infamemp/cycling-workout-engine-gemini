@@ -1,6 +1,6 @@
 # Cycling Workout Generator — Project Specification
 
-**Status:** Draft v2.5 — Gemini reasoning-layer fork (`cycling-workout-engine-gemini`). Section 9 rewritten for the `google-genai` SDK / `response_schema` architecture, including the two-call research+structure pattern required by the API's grounding/structured-output incompatibility. All other sections (4–8, 10–17) are unchanged from v2.4 — they describe the deterministic core and hard rules, which are provider-agnostic. Previous: v2.4 — (a) Section 6.3/11.4 ramp-RPE examples corrected to the half-open zone-boundary convention: a `45-75%` ramp resolves to `[RPE 1-5]` (75% falls in Tempo), fixing the internal contradiction with the earlier `[RPE 1-4]` examples; (b) Section 16.6 added: hrTSS-type design-time estimate for HR mode; (c) Section 16 hardened in implementation: deterministic work-intensity resolution wired into the pipeline, budget ceiling enforced on effective structure, floor applies to targets only, zone containment (not overlap), rejection feedback on retries, zone-bounded conflict detection without a user IF. Previous: v2.3 (no-KB rule, Section 9.6).
+**Status:** Draft v2.6 — Section 16 rewritten (v0.5.0): power load is Normalized Power with the 30 s rolling average, HR load is HRSS (normalised TRIMP), both as Intervals.icu computes planned workouts; Section 5 gains the athlete settings file (`athlete.yaml`). Previous: v2.5 — Gemini reasoning-layer fork (`cycling-workout-engine-gemini`). Section 9 rewritten for the `google-genai` SDK / `response_schema` architecture, including the two-call research+structure pattern required by the API's grounding/structured-output incompatibility. All other sections (4–8, 10–17) are unchanged from v2.4 — they describe the deterministic core and hard rules, which are provider-agnostic. Previous: v2.4 — (a) Section 6.3/11.4 ramp-RPE examples corrected to the half-open zone-boundary convention: a `45-75%` ramp resolves to `[RPE 1-5]` (75% falls in Tempo), fixing the internal contradiction with the earlier `[RPE 1-4]` examples; (b) Section 16.6 added: hrTSS-type design-time estimate for HR mode; (c) Section 16 hardened in implementation: deterministic work-intensity resolution wired into the pipeline, budget ceiling enforced on effective structure, floor applies to targets only, zone containment (not overlap), rejection feedback on retries, zone-bounded conflict detection without a user IF. Previous: v2.3 (no-KB rule, Section 9.6).
 **Governing principle — engine identity:** the engine has no prescribed menu. It is intelligent and equipped to investigate the methodology and physiology of the required training stimuli in depth, and from that foundation create individual sessions and progressions aligned with sound training principles. Reference material (the athlete's initial stimulus matrix, peer-reviewed sources) is *foundation to reason from*, never a lookup table to copy values out of. This is the core distinction from the monotonous generators this project replaces.
 **Governing principle — coaching boundary:** the engine never defaults a training-methodology decision about *when/whether* to apply work (ramp-rate-over-weeks, recovery-week reduction, periodization shape, athlete readiness). Those belong to a separate coach. An incomplete request is flagged, never filled in. Purely mechanical/software decisions (algebraic solving, log schema, config defaults like a lookback window) and physiological generation decisions (work/recovery structure within a session, sampled by reasoning) remain the engine's legitimate territory.
 **Scope:** This document assumes nothing beyond what is written here. Any behavior not explicitly listed should be treated as undefined and raised for clarification before implementation.
@@ -74,6 +74,8 @@ The project uses Joe Friel's preset Power and Heart Rate zone tables exactly as 
 
 - **Power anchor value (the single number that serves as CP for the W′bal simulation; see Section 7.2.3):** optional. Used internally only — never converted into absolute watts in the output (output is always %-based, Section 4.3). Its absence does not change the output format, only whether the CP/W′ model (Section 7.2) can run.
 - **LTHR:** optional, internal-only, independent of the power anchor. Same logic — never converted into absolute bpm in the output.
+- **Max HR and resting HR:** optional, internal-only. Together with LTHR they let the engine compute the HR-mode load (HRSS, Section 16.6) exactly as Intervals.icu does; without all three it uses a typical profile and labels the load approximate.
+- **Where these values come from (v2.6):** the user's own settings file, `athlete.yaml` at the repository root (git-ignored; template `athlete.example.yaml`). Every field is optional and a missing file or field never blocks generation.
 - **W′ (anaerobic work capacity, kJ):** optional. Only used if explicitly provided. If the user provides a power anchor value but not W′, the engine does **not** block — it relies on the always-on physiological foundation (Section 7.1) for high-intensity zones instead of the CP/W′ model.
 - The engine never queries intervals.icu (or any platform) for these input values automatically.
 
@@ -401,21 +403,23 @@ This module exists because the athlete may specify any two of {TSS, IF, duration
 
 Given any two of {TSS, IF, duration}, the third is solved by direct algebra — e.g., `duration_hours = TSS / (IF² × 100)`. This step is fully deterministic and should never produce a calculation error if implemented correctly; it is simple division/multiplication, not an estimate.
 
-### 16.2 Work-Segment Intensity Resolution (closed-form, single unknown)
+### 16.2 Normalized Power and Work-Segment Intensity Resolution (v2.6)
 
-The harder part: the session's overall IF is derived from its Normalized Power (NP), which weights each segment's power to the 4th power — **not a simple time-weighted average**. A lower-intensity warmup/cooldown pulls overall NP down, meaning the main work segment(s) must run hotter than the target IF would naively suggest, to compensate.
+**How load is computed (power).** The session is expanded to a 1 Hz power stream (a ramp changes linearly second by second), smoothed with a 30-second rolling average (at the very start, the average of the seconds available), raised to the 4th power, averaged, and the 4th root taken. That is Normalized Power, as a fraction of FTP; `IF = NP`, `TSS = hours × IF² × 100`.
+
+**Why this definition.** It is the one Intervals.icu applies to planned workouts. Checked on 2026-10-08 against 85 real planned power workouts from the head coach's Intervals.icu calendars: recomputed here, the load differed from the one Intervals.icu stored by 0.48 TSS on average and 1.4 at most. Two alternatives were measured on the same 85 workouts and rejected:
+- the simplified 4th-power average without the rolling window (spec ≤ v2.5): off by up to 58 TSS on short efforts (30/30s, sprints), because the window is what damps them;
+- a per-step sum of `hours × IF² × 100`: under-read interval sessions by up to 11 TSS (mean −4%), because it ignores the 4th-power weighting altogether.
+
+The workouts themselves are not stored in this repository (they are athletes' data); the measurement and its numbers are recorded in CHANGELOG v0.5.0.
 
 **Required algorithm order (strict, never simultaneous):**
 1. Fix the structure first (rep count, work/rest durations, warmup/cooldown shape) by reasoning from the physiological foundation (Sections 7.1/8) — without reference to TSS/IF at this stage.
-2. Only then solve for the one remaining free variable — the work-segment intensity — using the closed-form 4th-power relationship:
+2. Only then solve for the one remaining free variable — the work-segment intensity `x` — so that `NP(session(x)) = NP_target`, where `NP_target = IF_target` or `sqrt(TSS_target / (hours × 100))`.
 
-`P_work = [ (NP_target⁴ × T_total − Σ(known segments: tᵢ × Pᵢ⁴)) / t_work ]^(1/4)`
+The rolling window makes NP depend on the order of the segments, so the solve runs on the session exactly as it will be assembled (warmup, prep, main set in order with repeats expanded, cooldown). There is no closed form once the window is in the formula; NP rises monotonically with `x`, so the engine solves by bisection to 10⁻⁷.
 
-where the "known segments" (warmup, cooldown, between-rep recovery) have their power and duration already fixed by step 1.
-
-**Note on the NP formula (deliberate simplification).** The relationship above treats NP as a direct 4th-power-weighted average of segment powers. The *full* NP definition used by intervals.icu / TrainingPeaks applies a 30-second rolling average to power *before* raising to the 4th power. This project deliberately uses the simplified form because: (a) it is far more robust to implement — a weighted sum and a fourth root, with essentially no room for implementation bugs — whereas the rolling-average version adds windowing/edge-alignment complexity that is itself a common error source; and (b) the engine's TSS is only a **design-time estimate** used to resolve work-segment intensity — the real, authoritative TSS is computed by intervals.icu/TrainingPeaks when the workout is uploaded. For long, stable intervals (Tempo, Sweet Spot, Threshold, 3–5 min VO2max) the two agree to within ~1–2 TSS. The only place they diverge meaningfully is very short, high-variability micro-intervals (30/30, 40/20, sprints) — and those are almost never designed against an exact TSS target anyway (they are designed by structure: number of efforts, duration). The platform's real calculation governs on upload; any small estimate-vs-real difference is expected and acceptable.
-
-For structural patterns with more than one distinct work intensity (e.g., over/under), the secondary intensity must be parametrized as a fixed offset/ratio relative to the primary one (defined by the structural pattern itself), so exactly one true degree of freedom remains for this equation to solve — never two or more simultaneous unknowns from a single NP-target equation.
+For structural patterns with more than one distinct work intensity (e.g., over/under), the secondary intensity keeps a fixed ratio to the primary one (the proportions the reasoning layer proposed), so exactly one true degree of freedom remains — never two or more simultaneous unknowns.
 
 ### 16.3 Infeasibility Handling (mandatory, not optional)
 
@@ -429,27 +433,35 @@ Resolved values may be fractional (e.g., `4m23.7s @ 88.4%`). The engine **always
 
 After rounding, the engine reports the **real TSS of the rounded workout** (computed from the values actually written to the file), never the original theoretical target. If the user asked for "TSS 80" and the rounded session actually yields 78, the engine reports 78 — the number that corresponds to what will actually be executed. This prevents the silent label-vs-reality mismatch that has historically caused TSS errors in this kind of tool.
 
-The engine's reported TSS is labeled as a **design-time estimate**, not the authoritative figure — the real value is whatever intervals.icu/TrainingPeaks computes on upload (see the NP simplification note in Section 16.2). The engine never presents its TSS as the final official number.
+The engine's reported TSS is labeled as a **design-time estimate**, not the authoritative figure — the real value is whatever intervals.icu computes on upload (Section 16.2 shows how close the engine's figure is). The engine never presents its TSS as the final official number.
 
 ### 16.5 Failure Modes This Design Avoids
 
 Documented as institutional memory, given the project's prior history of errors in this exact area:
 - Solving structure and intensity simultaneously as one coupled unknown set, instead of sequencing them (Section 16.2, step order).
-- Using a simple average instead of the correct 4th-power-weighted NP calculation.
+- Using a simple average, or a per-step `IF²` sum, instead of the 4th-power-weighted NP (measured: −4% mean, up to −11 TSS on intervals).
+- Dropping the 30 s rolling window (measured: up to +58 TSS on short efforts).
+- Costing a ramp at its midpoint as if it were flat: the stream follows the ramp.
 - Failing to detect and report infeasibility, silently forcing an out-of-range intensity instead.
 - Unit/formula errors (hours vs. seconds, % vs. fraction for IF).
 
-**Mandatory before this module is considered complete:** a unit test suite built from hand-calculated reference cases (known structure + known target TSS/IF → independently verified expected work-segment intensity), not just example-based spot checks.
+**Mandatory before this module is considered complete:** a unit test suite built from hand-calculated reference cases (a constant session; two blocks whose 29 transition seconds are summed by hand; the partial window at the start; a ramp's linear stream) and reconstruction tests (build a session with a known work intensity, take its NP as the target, and the resolver must return that intensity).
 
-### 16.6 HR-Mode Design-Time TSS (hrTSS-type estimate)
+### 16.6 HR-Mode Load: HRSS (v2.6)
 
-NP, IF, and power-based TSS (Sections 16.1–16.2) are power math and do not apply to heart rate. For HR-mode sessions the engine reports an **hrTSS-type design-time estimate** instead:
+NP, IF and power-based TSS are power math and do not apply to heart rate. For HR-mode sessions the engine reports **HRSS (normalised TRIMP)**, the method the Intervals.icu workout builder uses for heart-rate workouts:
 
-- Each segment's %LTHR midpoint maps to an **equivalent IF** via a continuous linear approximation anchored at physiological references: `IF_eq = 1.5 × (fraction of LTHR) − 0.5`, floored at 0 (LTHR → IF 1.0; ~70% LTHR → IF ~0.55 — power falls faster than HR at low intensities).
-- TSS accumulates **segment-wise**: `Σ (t_hours × IF_eq² × 100)`. Deliberately no NP-style 4th-power weighting — that models power variability physiology and is meaningless applied to heart rate.
-- The session's reported IF is the equivalent IF derived from the whole-session algebra (16.1).
-- This mapping is a **continuous function, not a zone-table correlation** — it does not map the Friel power and HR zone tables to each other (Section 4's rule stands).
-- Same status as the power estimate: a design-time figure; the platform's own computation governs on upload.
+- Each second's heart rate is the target %LTHR × the athlete's LTHR, in whole bpm (Intervals.icu sums HRSS bpm by bpm, not from the average).
+- `HRr = (HR − resting HR) / (max HR − resting HR)`, limited to 0–1.
+- `TRIMP per minute = HRr × 0.64 × e^(1.92 × HRr)` (Banister).
+- `HRSS = 100 × TRIMP(session) / TRIMP(60 min at LTHR)`: one hour at LTHR is 100, the same scale as TSS.
+- The session's reported IF is the equivalent IF from the session algebra (16.1): `IF = sqrt(HRSS / (hours × 100))`.
+
+HRSS needs three values from the athlete (Section 5): LTHR, max HR and resting HR. With all three, this is the formula Intervals.icu applies; it keeps the thresholds of the day a workout was planned, so a later change there moves its number, not the engine's. The check against real planned HR workouts is weaker than for power (2 of 8 reproduced with today's thresholds; CHANGELOG v0.5.0), so HR loads are close, not guaranteed exact. Without them, the engine uses a typical profile (max HR = 1.09 × LTHR, resting HR = 0.37 × LTHR), still gets "one hour at LTHR = 100" exactly, and labels the load **approximate**.
+
+This replaces the v2.4 continuous mapping `IF_eq = 1.5 × (fraction of LTHR) − 0.5`, which had no source in the platform. The mapping is a function of heart rate alone — it does not cross-correlate the Friel power and HR zone tables (Section 4's rule stands).
+
+Same status as the power estimate: a design-time figure; the platform's own computation governs on upload.
 
 ## 17. Generation Catalog & Memory (variety through intelligence, not mechanical comparison)
 

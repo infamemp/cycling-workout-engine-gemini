@@ -31,3 +31,6 @@ progression_prog_*/
 # --- OS ---
 .DS_Store
 Thumbs.db
+
+# --- Personal athlete thresholds (template: athlete.example.yaml) ---
+athlete.yaml

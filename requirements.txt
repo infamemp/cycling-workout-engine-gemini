@@ -1,3 +1,4 @@
 google-genai>=2.29
 pytest
 jsonschema
+pyyaml

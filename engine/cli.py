@@ -19,6 +19,7 @@ from .models import GenerationRequest, Athlete
 from .generator import generate_single
 from .structure import ConstraintConflict
 from .catalog import Catalog
+from .athlete_settings import load_athlete, SettingsError
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +40,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="CP/FTP in watts (internal only; never rendered)")
     p.add_argument("--wprime", type=float, default=None, help="W' in joules")
     p.add_argument("--lthr", type=float, default=None, help="LTHR in bpm")
+    p.add_argument("--max-hr", type=float, default=None, help="Max HR in bpm")
+    p.add_argument("--rest-hr", type=float, default=None,
+                   help="Resting HR in bpm")
+    p.add_argument("--athlete", default=None,
+                   help="Athlete settings file (default: athlete.yaml if "
+                        "present). Command-line values override it.")
     p.add_argument("--seed", type=int, default=None, help="Random seed (repro)")
     p.add_argument("--offline", action="store_true",
                    help="Deterministic core only, no API (Phase-1 default).")
@@ -52,6 +59,19 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    try:
+        base = load_athlete(args.athlete)
+    except SettingsError as e:
+        print(f"SETTINGS: {e}", file=sys.stderr)
+        return 2
+    athlete = Athlete(
+        cp_watts=args.cp or base.cp_watts,
+        w_prime_joules=args.wprime or base.w_prime_joules,
+        lthr_bpm=args.lthr or base.lthr_bpm,
+        max_hr_bpm=args.max_hr or base.max_hr_bpm,
+        resting_hr_bpm=args.rest_hr or base.resting_hr_bpm,
+    )
+
     req = GenerationRequest(
         kind="single_session",
         mode=args.mode,
@@ -60,8 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         max_available_seconds=args.max_duration * 60 if args.max_duration else None,
         target_tss=args.tss,
         target_if=args.intensity_factor,
-        athlete=Athlete(cp_watts=args.cp, w_prime_joules=args.wprime,
-                        lthr_bpm=args.lthr),
+        athlete=athlete,
     )
 
     catalog = Catalog(args.catalog) if args.catalog else None
@@ -76,7 +95,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.out:
         Path(args.out).write_text(sess.markdown_output, encoding="utf-8")
-        print(f"Wrote {args.out}  (estimated TSS {sess.estimated_tss}, "
+        approx = " (approximate)" if sess.tss_method == "hrss_typical" else ""
+        print(f"Wrote {args.out}  (estimated TSS {sess.estimated_tss}{approx}, "
               f"IF {sess.estimated_if})", file=sys.stderr)
     else:
         print(sess.markdown_output)

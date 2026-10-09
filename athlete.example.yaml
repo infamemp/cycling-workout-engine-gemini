@@ -1,0 +1,18 @@
+# Your own thresholds. Copy this file to athlete.yaml (git-ignored) and fill
+# in your values. Every field is optional.
+#
+# The workouts are always written in % of threshold; these numbers are used
+# only inside the engine:
+#   - lthr_bpm, max_hr_bpm, resting_hr_bpm: the load (HRSS) of heart-rate
+#     workouts, computed the way Intervals.icu computes it. Without all
+#     three the engine uses a typical profile and marks the load approximate.
+#   - ftp_watts, w_prime_joules: reserved for the CP/W' model (spec 7.2).
+#
+# Use the same values as in your Intervals.icu settings (resting HR changes
+# day to day there; use a recent typical value).
+
+ftp_watts: 250
+w_prime_joules: 20000
+lthr_bpm: 160
+max_hr_bpm: 180
+resting_hr_bpm: 55

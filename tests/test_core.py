@@ -54,67 +54,82 @@ def test_round_trip_consistency():
 
 
 # ============================================================
-# Normalized Power (simplified) — hand-calculated
+# Normalized Power, 30 s rolling average (spec 16.2, v2.6) — hand-calculated
 # ============================================================
 
 def test_np_constant_power_equals_that_power():
-    # A single steady segment: NP == that power.
+    # A single steady segment: every rolling average is that power.
     segs = [tss.Segment(3600, 0.9)]
-    assert abs(tss.normalized_power_frac(segs) - 0.9) < 1e-9
+    assert abs(tss.normalized_power_frac(segs) - 0.9) < 1e-12
 
 
-def test_np_two_equal_duration_segments():
-    # Two 600s segments at 0.6 and 1.0.
-    # NP = ((600*0.6^4 + 600*1.0^4)/1200)^(1/4)
-    #    = ((0.1296 + 1.0)/2)^(1/4) = (0.5648)^0.25
+def test_np_two_blocks_hand_calculated():
+    # 600 s at 0.6 then 600 s at 1.0. The first 600 rolling averages are
+    # 0.6. In the 29 seconds after the change the window holds k seconds at
+    # 1.0 and 30-k at 0.6 (k = 1..29): average 0.6 + 0.4k/30. The remaining
+    # 571 seconds average 1.0.
+    expected4 = (600 * 0.6 ** 4
+                 + sum((0.6 + 0.4 * k / 30) ** 4 for k in range(1, 30))
+                 + 571 * 1.0 ** 4) / 1200
     segs = [tss.Segment(600, 0.6), tss.Segment(600, 1.0)]
-    expected = (0.5648) ** 0.25
-    assert abs(tss.normalized_power_frac(segs) - expected) < 1e-9
+    assert abs(tss.normalized_power_frac(segs) - expected4 ** 0.25) < 1e-12
 
 
-def test_np_weights_high_power_more():
-    # NP must exceed the simple time-average because of 4th-power weighting.
-    segs = [tss.Segment(600, 0.6), tss.Segment(600, 1.0)]
-    simple_avg = 0.8
-    assert tss.normalized_power_frac(segs) > simple_avg
+def test_np_partial_window_at_start():
+    # The first seconds average over the seconds available, so a session
+    # that starts at 1.0 is not dragged down by an imaginary zero.
+    segs = [tss.Segment(10, 1.0), tss.Segment(20, 0.5)]
+    p = [1.0] * 10 + [0.5] * 20
+    avgs = [sum(p[:i + 1]) / (i + 1) for i in range(30)]
+    expected = (sum(a ** 4 for a in avgs) / 30) ** 0.25
+    assert abs(tss.normalized_power_frac(segs) - expected) < 1e-12
+
+
+def test_np_window_damps_short_efforts():
+    # 30/30s: the raw 4th-power average over-reads them; the 30 s window is
+    # what keeps a 30/30 session's load realistic.
+    segs = [tss.Segment(30, 1.2), tss.Segment(30, 0.5)] * 20
+    raw = (sum(s.duration_seconds * s.power_frac ** 4 for s in segs)
+           / sum(s.duration_seconds for s in segs)) ** 0.25
+    np_ = tss.normalized_power_frac(segs)
+    assert np_ < raw
+    assert np_ > (1.2 * 30 + 0.5 * 30) / 60   # still above the plain average
+
+
+def test_ramp_stream_is_linear():
+    # A 10 s ramp from 0.5 to 1.0 is sampled at the middle of each second.
+    p = tss.stream([tss.Segment(10, 0.5, 1.0)])
+    assert len(p) == 10
+    assert abs(p[0] - 0.525) < 1e-12 and abs(p[-1] - 0.975) < 1e-12
+    assert abs(sum(p) / 10 - 0.75) < 1e-12
+
+
+def test_session_tss_one_hour_at_ftp_is_100():
+    assert abs(tss.session_tss([tss.Segment(3600, 1.0)]) - 100.0) < 1e-9
 
 
 # ============================================================
-# Work-segment intensity resolution — hand-calculated
+# Solving the one unknown intensity — reconstruction
 # ============================================================
 
-def test_solve_work_power_recovers_known_answer():
-    # Construct a session whose true NP we know, then solve for the work power
-    # and confirm we get it back.
-    # Warmup-ish: 600s @ 0.5 ; Work: 1800s @ P ; recovery 600s @ 0.5
-    # Choose P = 0.9. total = 3000s.
-    # NP^4 = (600*0.5^4 + 1800*0.9^4 + 600*0.5^4)/3000
-    known = [tss.Segment(600, 0.5), tss.Segment(600, 0.5)]
-    work_p = 0.9
-    total = 3000.0
-    work_t = 1800.0
-    np4 = (600 * 0.5**4 + 1800 * work_p**4 + 600 * 0.5**4) / total
-    np_target = np4 ** 0.25
-    solved = tss.solve_work_power_frac(
-        np_target_frac=np_target,
-        total_seconds=total,
-        known_segments=known,
-        work_total_seconds=work_t,
-    )
-    assert abs(solved - work_p) < 1e-9
+def _build_session(x):
+    return [tss.Segment(600, 0.45, 0.75), tss.Segment(120, 0.5)] + \
+        [tss.Segment(480, x), tss.Segment(180, 0.55)] * 3 + \
+        [tss.Segment(300, 0.75, 0.45)]
 
 
-def test_solve_work_power_infeasible_raises():
-    # Demand an NP so low that even zero work power can't bring it down:
-    # known segments alone already exceed the target.
-    known = [tss.Segment(1000, 0.95)]
+def test_solve_scale_recovers_known_answer():
+    x_true = 0.88
+    target = tss.normalized_power_frac(_build_session(x_true))
+    assert abs(tss.solve_scale(_build_session, target) - x_true) < 1e-6
+
+
+def test_solve_scale_infeasible_raises():
+    # The fixed segments alone already exceed the target NP.
+    def build(x):
+        return [tss.Segment(1000, 0.95), tss.Segment(1000, x)]
     try:
-        tss.solve_work_power_frac(
-            np_target_frac=0.40,  # absurdly low vs 0.95 known
-            total_seconds=2000,
-            known_segments=known,
-            work_total_seconds=1000,
-        )
+        tss.solve_scale(build, 0.40)
         assert False, "expected InfeasibleError"
     except tss.InfeasibleError:
         pass
@@ -397,32 +412,53 @@ def test_catalog_records_hr_generation():
 
 
 # ============================================================
-# hrTSS-type estimate for HR mode (spec 16.6)
+# HR-mode load: HRSS (spec 16.6, v2.6)
 # ============================================================
 
-def test_hr_equivalent_if_anchors():
-    # Anchors: LTHR -> 1.0; 70% LTHR -> 0.55; floor at 0.
-    assert abs(tss.hr_equivalent_if(1.00) - 1.00) < 1e-9
-    assert abs(tss.hr_equivalent_if(0.70) - 0.55) < 1e-9
-    assert tss.hr_equivalent_if(0.20) == 0.0
+_PROFILE = tss.HrProfile(lthr_bpm=160, max_hr_bpm=180, resting_hr_bpm=60)
 
 
-def test_hr_session_tss_hand_calculated():
-    # 30 min at 92% LTHR: IF_eq = 1.5*0.92-0.5 = 0.88
-    # TSS = 0.5h * 0.88^2 * 100 = 38.72
-    segs = [tss.Segment(1800, 0.92)]
-    t, eq_if = tss.hr_session_tss(segs)
-    assert abs(t - 38.72) < 1e-9
-    assert abs(eq_if - 0.88) < 1e-9
+def test_hrss_one_hour_at_lthr_is_100():
+    load, eq_if, exact = tss.hr_session_tss([tss.Segment(3600, 1.0)], _PROFILE)
+    assert abs(load - 100.0) < 1e-9
+    assert abs(eq_if - 1.0) < 1e-9
+    assert exact is True
 
 
-def test_hr_session_tss_segmentwise_accumulation():
-    # Two segments accumulate independently (no NP-style weighting):
-    # 10 min @ 70% (IF 0.55) -> (1/6)*0.3025*100 = 5.041666...
-    # 20 min @ 92% (IF 0.88) -> (1/3)*0.7744*100 = 25.81333...
-    segs = [tss.Segment(600, 0.70), tss.Segment(1200, 0.92)]
-    t, _ = tss.hr_session_tss(segs)
-    assert abs(t - (5.0416666667 + 25.8133333333)) < 1e-6
+def test_hrss_hand_calculated():
+    # 30 min at 80% LTHR: 128 bpm. HRr = (128-60)/(180-60) = 0.566667.
+    # LTHR: HRr = 100/120 = 0.833333.
+    # HRSS = 100 * (30 * HRr * e^(1.92 HRr)) / (60 * HRr_lt * e^(1.92 HRr_lt))
+    import math
+    hrr, lt = 68 / 120, 100 / 120
+    expected = 100 * (30 * hrr * math.exp(1.92 * hrr)) / \
+        (60 * lt * math.exp(1.92 * lt))
+    load, _, _ = tss.hr_session_tss([tss.Segment(1800, 0.80)], _PROFILE)
+    assert abs(load - expected) < 1e-9
+
+
+def test_hrss_rounds_each_second_to_whole_bpm():
+    # 81.2% of 160 = 129.92 -> 130 bpm, the same as a 130 bpm target.
+    a, _, _ = tss.hr_session_tss([tss.Segment(600, 0.812)], _PROFILE)
+    b, _, _ = tss.hr_session_tss([tss.Segment(600, 130 / 160)], _PROFILE)
+    assert abs(a - b) < 1e-12
+
+
+def test_hrss_below_resting_counts_zero():
+    load, _, _ = tss.hr_session_tss([tss.Segment(600, 0.30)], _PROFILE)
+    assert load == 0.0
+
+
+def test_hrss_without_profile_is_flagged_approximate():
+    load, _, exact = tss.hr_session_tss([tss.Segment(3600, 1.0)], None)
+    assert exact is False
+    assert abs(load - 100.0) < 1e-9   # 1 h at LTHR is 100 for any profile
+
+
+def test_hrss_invalid_profile_falls_back():
+    bad = tss.HrProfile(lthr_bpm=160, max_hr_bpm=150, resting_hr_bpm=60)
+    _, _, exact = tss.hr_session_tss([tss.Segment(600, 0.9)], bad)
+    assert exact is False
 
 
 def test_hr_generation_reports_hrtss():

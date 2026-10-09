@@ -552,19 +552,28 @@ def _c3_structure_proposal():
     }
 
 
-def test_c3_hand_calculated_solve():
-    """Hand-calc (spec 16.5): warmup 300s@0.60 + prep 120s@0.50 + cooldown
-    300s@0.60 + 3x(600s work + 180s rec@0.575), T=3060s, target TSS 55
-    -> IF=0.804400 -> solved work fraction 0.891479 (89.15%)."""
+def _c3_before_after():
     from engine import tss as tssmod
-    from engine.resolve_intensity import (_classify, solve_dominant_intensity)
-    prop = _c3_structure_proposal()
-    work, known_main = _classify(prop, "Tempo")
-    known = [tssmod.Segment(300, 0.60), tssmod.Segment(120, 0.50),
-             tssmod.Segment(300, 0.60)] + known_main
-    x = solve_dominant_intensity(work=work, known=known,
-                                 np_target_frac=0.804400)
-    assert abs(x - 0.891479) < 1e-4
+    before = [tssmod.Segment(300, 0.45, 0.75), tssmod.Segment(120, 0.50)]
+    after = [tssmod.Segment(300, 0.75, 0.45)]
+    return before, after
+
+
+def test_c3_solve_reconstructs_known_intensity():
+    """Spec 16.5 (v2.6): build the session with a known work intensity,
+    take its NP as the target, and the resolver must give that intensity
+    back. Warmup ramp 45-75%, prep 50%, 3x(600s work + 180s @57.5%),
+    cooldown ramp 75-45%; true work intensity 89%."""
+    from engine import tss as tssmod
+    from engine.resolve_intensity import resolve_proposal_intensity
+    before, after = _c3_before_after()
+    work = [tssmod.Segment(600, 0.89), tssmod.Segment(180, 0.575)] * 3
+    target = tssmod.normalized_power_frac(before + work + after)
+    out = resolve_proposal_intensity(
+        _c3_structure_proposal(), mode="power", dominant_zone="Tempo",
+        np_target_frac=target, before_segments=before, after_segments=after)
+    step = out["main_set"][0]["steps"][0]
+    assert (step["low_pct"] + step["high_pct"]) / 2 == 89
 
 
 def test_c3_endtoend_tss_target_resolved_not_guessed():
@@ -606,19 +615,31 @@ def test_c3_infeasible_target_reported_with_numbers():
 
 
 def test_c3_ratio_preserved_multiple_work_steps():
-    """Two dominant work steps (mids 80% and 88%): ratios preserved, single
-    unknown. Verify the solve reproduces a constructed known answer."""
+    """Two dominant work steps (proposed mids 80% and 88%, ratio 1.1): one
+    unknown. Build the session at x = 0.80 (steps 80% and 88%), and the
+    resolver must return those centers with the ratio intact."""
     from engine import tss as tssmod
-    from engine.resolve_intensity import _WorkStep, solve_dominant_intensity
-    # Construct: known 600s@0.5; work A 600s@r=1.0, work B 600s@r=1.1 with
-    # true x=0.85 -> B=0.935. Compute the NP of that exact session, then solve.
-    known = [tssmod.Segment(600, 0.5)]
-    x_true = 0.85
-    segs = known + [tssmod.Segment(600, x_true), tssmod.Segment(600, 1.1*x_true)]
-    np_t = tssmod.normalized_power_frac(segs)
-    work = [_WorkStep(600, 0.80, 4.0), _WorkStep(600, 0.88, 4.0)]  # ratio 1.1
-    x = solve_dominant_intensity(work=work, known=known, np_target_frac=np_t)
-    assert abs(x - x_true) < 1e-9
+    from engine.resolve_intensity import resolve_proposal_intensity
+    before, after = _c3_before_after()
+    prop = {
+        "structural_pattern": "progressive",
+        "summary": "two-level tempo",
+        "main_set": [
+            {"element": "step", "duration_seconds": 600, "low_pct": 77,
+             "high_pct": 83, "zone_name": "Tempo"},
+            {"element": "step", "duration_seconds": 600, "low_pct": 85,
+             "high_pct": 91, "zone_name": "Tempo"},
+        ],
+    }
+    target = tssmod.normalized_power_frac(
+        before + [tssmod.Segment(600, 0.80), tssmod.Segment(600, 0.88)] + after)
+    out = resolve_proposal_intensity(prop, mode="power", dominant_zone="Tempo",
+                                     np_target_frac=target,
+                                     before_segments=before,
+                                     after_segments=after)
+    a_, b_ = out["main_set"]
+    assert (a_["low_pct"] + a_["high_pct"]) / 2 == 80
+    assert (b_["low_pct"] + b_["high_pct"]) / 2 == 88
 
 
 def test_c3_if_target_verified_after_build():

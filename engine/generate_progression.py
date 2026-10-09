@@ -137,8 +137,10 @@ def generate_progression(req: GenerationRequest, *,
 
         main_set = build_main_set(req.mode, sess_proposal)
         markdown = assembler.build_markdown(warmup, main_set, cooldown)
-        est_tss, est_if = assembler.compute_tss_if(warmup, main_set, cooldown,
-                                                    mode=req.mode)
+        load = assembler.compute_load(warmup, main_set, cooldown,
+                                      mode=req.mode,
+                                      hr_profile=req.athlete.hr_profile())
+        est_tss, est_if = load.tss, load.intensity_factor
 
         sid = str(uuid.uuid4())[:8]
         summary = sess_proposal.get("summary",
@@ -156,6 +158,7 @@ def generate_progression(req: GenerationRequest, *,
             feasibility=Feasibility(satisfied=True),
             summary=f"[{idx}/{len(progression['sessions'])}] {summary}",
             markdown_output=markdown, progression_id=prog_id,
+            tss_method=load.method,
         )
         sessions.append(session)
 

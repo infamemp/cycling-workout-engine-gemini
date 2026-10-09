@@ -76,7 +76,21 @@ share this output):
 echo $env:GEMINI_API_KEY
 ```
 
-## 8. Generate your first real workout
+## 8. Your thresholds (optional)
+
+Copy the template and open it:
+
+```powershell
+copy athlete.example.yaml athlete.yaml
+notepad athlete.yaml
+```
+
+Replace the example numbers with your own — the same values as in your
+Intervals.icu settings — and save. The file is git-ignored, so it never
+reaches GitHub. Without it, heart-rate workouts show their load as
+approximate.
+
+## 9. Generate your first real workout
 
 ```powershell
 cd C:\Dev\Github\cycling-workout-engine-gemini

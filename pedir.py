@@ -27,6 +27,7 @@ from engine.generator_v2 import generate_single_v2
 from engine.generate_progression import generate_progression
 from engine.models import GenerationRequest
 from engine.catalog import Catalog
+from engine.athlete_settings import load_athlete, SettingsError
 
 
 CATALOG_FILE = "my_catalog.sqlite"
@@ -49,6 +50,8 @@ _STRINGS = {
         "graduation": "Graduacion:",
         "session_word": "Sesion",
         "all_saved_in": "Todas las sesiones guardadas en la carpeta:",
+        "load_typical": "(aproximado: faltan LTHR, FC maxima o FC de reposo en athlete.yaml)",
+        "settings_error": "Revisa athlete.yaml:",
     },
     "en": {
         "usage_examples": "Examples:",
@@ -65,6 +68,8 @@ _STRINGS = {
         "graduation": "Graduation:",
         "session_word": "Session",
         "all_saved_in": "All sessions saved in folder:",
+        "load_typical": "(approximate: LTHR, max HR or resting HR missing in athlete.yaml)",
+        "settings_error": "Check athlete.yaml:",
     },
 }
 
@@ -109,7 +114,12 @@ def main() -> int:
           f"kind={parsed['kind']}, lang={lang}")
     print()
 
-    # 2) Build the structured request.
+    # 2) Build the structured request (thresholds from athlete.yaml, if any).
+    try:
+        athlete = load_athlete()
+    except SettingsError as e:
+        print(f"{S['settings_error']} {e}")
+        return 2
     dur_min = parsed.get("duration_minutes")
     maxd_min = parsed.get("max_duration_minutes")
     req = GenerationRequest(
@@ -120,6 +130,7 @@ def main() -> int:
         max_available_seconds=maxd_min * 60 if maxd_min else None,
         target_tss=parsed.get("target_tss"),
         target_if=parsed.get("target_if"),
+        athlete=athlete,
     )
 
     catalog = Catalog(CATALOG_FILE)
@@ -151,7 +162,8 @@ def main() -> int:
 
 def _show_session(sess, S: dict) -> None:
     print(sess.markdown_output)
-    print(f"\n{S['estimated_tss']} {sess.estimated_tss}  |  IF: {sess.estimated_if}")
+    print(f"\n{S['estimated_tss']} {sess.estimated_tss}  |  IF: {sess.estimated_if}"
+          + (f"  {S['load_typical']}" if sess.tss_method == "hrss_typical" else ""))
     fname = f"workout_{sess.id}.md"
     with open(fname, "w", encoding="utf-8") as f:
         f.write(sess.markdown_output)
@@ -167,8 +179,9 @@ def _show_progression(result, S: dict) -> None:
     folder = f"progression_{result.progression_id}"
     os.makedirs(folder, exist_ok=True)
     for i, sess in enumerate(result.sessions, start=1):
+        approx = " ~" if sess.tss_method == "hrss_typical" else ""
         print(f"--- {S['session_word']} {i}/{len(result.sessions)}  "
-              f"(TSS {sess.estimated_tss}) ---")
+              f"(TSS{approx} {sess.estimated_tss}) ---")
         print(sess.markdown_output)
         print()
         fname = os.path.join(folder, f"session_{i:02d}.md")

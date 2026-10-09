@@ -95,8 +95,9 @@ def generate_single(req: GenerationRequest, *,
 
     # --- Assemble + real TSS (durable) ---
     markdown = assembler.build_markdown(warmup, main_set, cooldown)
-    est_tss, est_if = assembler.compute_tss_if(warmup, main_set, cooldown,
-                                                mode=req.mode)
+    load = assembler.compute_load(warmup, main_set, cooldown, mode=req.mode,
+                                  hr_profile=req.athlete.hr_profile())
+    est_tss, est_if = load.tss, load.intensity_factor
 
     sid = str(uuid.uuid4())[:8]
     summary = (f"{req.requested_zone} {reps}x{work_each//60}min "
@@ -119,6 +120,7 @@ def generate_single(req: GenerationRequest, *,
         markdown_output=markdown,
         progression_id=progression_id,
         generation_seed=seed,
+        tss_method=load.method,
     )
 
     if catalog is not None:

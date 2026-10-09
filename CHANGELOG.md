@@ -1,8 +1,8 @@
 # Cycling Workout Generator — CHANGELOG & Restore Point
 ## (Gemini fork: `cycling-workout-engine-gemini`)
 
-**Restore point date:** 2026-10-08 (v0.4.1 cleanup)
-**Status:** Specification v2.5 · Engine v0.4.1 · 94 tests passing
+**Restore point date:** 2026-10-08 (v0.5.0 training load)
+**Status:** Specification v2.6 · Engine v0.5.0 · 112 tests passing
 
 This CHANGELOG carries forward the full history of the original
 `cycling-workout-engine` (Claude reasoning layer) up to v0.3.0/spec v2.4,
@@ -11,6 +11,75 @@ then continues independently from here for this fork. Entries before
 architecture accurately as of when they were written — they are historical
 record, not a description of this repo's current behavior. See `README.md`
 for the current (Gemini) architecture.
+
+---
+
+## v0.5.0 — Training load as Intervals.icu computes it (2026-10-08)
+
+### Power: Normalized Power with the 30 s rolling average
+- The load was a simplified NP: segment powers to the 4th power, averaged by
+  time, with no rolling window, and ramps costed at their midpoint.
+- Now: a 1 Hz stream (ramps linear), 30 s rolling average (over the seconds
+  available at the very start), 4th power, mean, 4th root.
+- **Evidence.** 85 real planned power workouts from the head coach's
+  Intervals.icu calendars were recomputed with three methods and compared
+  with the load Intervals.icu stored for each:
+
+  | Method | Mean error | Largest error |
+  | --- | --- | --- |
+  | NP with 30 s rolling window (new) | 0.48 TSS | 1.4 TSS |
+  | Simplified NP, no window (v0.4.x) | 1.95 TSS | 58 TSS |
+  | Per-step sum of hours × IF² × 100 | 2.41 TSS (mean −4%) | 11 TSS |
+
+  The workouts are athletes' data and are not stored in this repository;
+  only the result is recorded here.
+- **Correction to an earlier review (2026-10-08).** A comparison with
+  Infame Elite Endurance Coach had concluded that this engine over-read
+  interval sessions by 9–29% against Intervals.icu, assuming Intervals.icu
+  costs each step as hours × IF² × 100. The measurement above shows the
+  opposite: Intervals.icu uses NP with the rolling window, and the per-step
+  method under-reads intervals.
+- The intensity resolver now solves on the session in its real order
+  (warmup, prep, main set with repeats expanded, cooldown), because the
+  rolling window makes NP depend on order, and by bisection (no closed form
+  with the window). `solve_work_power_frac` / `solve_dominant_intensity`
+  are replaced by `tss.solve_scale`; their hand-calculated tests are replaced
+  by hand-calculated NP cases and reconstruction tests.
+
+### Heart rate: HRSS
+- The HR load was `IF_eq = 1.5 × (fraction of LTHR) − 0.5`, a mapping with
+  no source in the platform.
+- Now: HRSS (normalised Banister TRIMP), the method the Intervals.icu
+  workout builder uses for heart-rate workouts — each second in whole bpm,
+  `HRr = (HR − rest) / (max − rest)`, TRIMP per minute
+  `HRr × 0.64 × e^(1.92 × HRr)`, scaled so 60 min at LTHR = 100.
+- It needs LTHR, max HR and resting HR. Without them a typical profile
+  (max = 1.09 × LTHR, rest = 0.37 × LTHR) stands in and the session is
+  flagged approximate (`tss_method = "hrss_typical"`; `pedir.py` and the CLI
+  say so next to the TSS).
+- Evidence, and its limit: Intervals.icu's developer states that the
+  builder uses HRSS for HR workouts, and the formula is the one Intervals.icu
+  users have reproduced (Banister TRIMP with 0.64 and 1.92). Against real
+  planned HR workouts the check is weaker than for power: with today's
+  thresholds it reproduced 2 of the 8 sessions checked to within 0.6. The
+  others were planned when the athletes' thresholds or resting HR were
+  different (Intervals.icu keeps the values of the day), so they cannot be
+  checked from here. Treat HR loads as close, not exact, until more
+  HR workouts are checked.
+
+### Athlete thresholds: `athlete.yaml`
+- New optional file at the repository root (git-ignored), template
+  `athlete.example.yaml`: `ftp_watts`, `w_prime_joules`, `lthr_bpm`,
+  `max_hr_bpm`, `resting_hr_bpm`. Read by `pedir.py` and `engine.cli`
+  (command-line values override it). Unknown fields, non-numbers and
+  heart rates out of order are rejected with a clear message.
+- `pyyaml` added to `requirements.txt`.
+
+### Other
+- `GeneratedSession.tss_method` records how the load was computed
+  (`np_30s`, `hrss`, `hrss_typical`).
+- Specification v2.6: Sections 5 and 16 rewritten.
+- Tests: 94 → 112.
 
 ---
 
