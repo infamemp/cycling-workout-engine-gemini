@@ -291,7 +291,7 @@ cycling-workout-engine-gemini/
 python -m pytest -q
 ```
 
-221 tests, all passing without any API key (a mock transport stands in for
+224 tests, all passing without any API key (a mock transport stands in for
 the real Gemini API). GitHub Actions runs them on every push
 (`.github/workflows/tests.yml`). Coverage includes hand-calculated TSS/IF
 reference cases (NP with the rolling window, HRSS), RPE derivation, output-syntax validation, end-to-end

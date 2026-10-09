@@ -186,3 +186,33 @@ def test_a_single_smooth_descent_passes():
     assert validate_section("cooldown", [ramp(300, 65, 48)], mode="power") == 300
     assert validate_section("cooldown", [step(120, 65, 70), step(180, 60, 65)],
                             mode="hr") == 300
+
+
+# --- spelling is not design ----------------------------------------------------------
+
+def test_zone_name_spelling_is_normalised():
+    from engine.proposal import normalize_zone_names
+    p = prop([rep(3, st(480, 80, 84, "tempo"),
+                  st(120, 50, 55, "Active Recovery", **REC))])
+    validate_proposal(p, mode="power", dominant_zone="Tempo")   # no error
+    out = normalize_zone_names(p)
+    steps = out["main_set"][0]["steps"]
+    assert [s["zone_name"] for s in steps] == ["Tempo", "ActiveRecovery"]
+    assert p["main_set"][0]["steps"][1]["zone_name"] == "Active Recovery"  # copy
+
+
+def test_a_zone_of_the_other_system_is_still_rejected():
+    p = prop([step_el(600, 80, 84, "Tempo"),
+              step_el(300, 70, 75, "Sub Threshold")])
+    with pytest.raises(ProposalRejected, match="not valid in power"):
+        validate_proposal(p, mode="power", dominant_zone="Tempo")
+
+
+def test_nested_names_are_normalised_too():
+    from engine.proposal import flatten_nested_repeats
+    inner = {"element": "repeat", "repeats": 2, "steps": [
+        st(30, 112, 118, "vo2 max"), st(30, 50, 55, "active-recovery", **REC)]}
+    p = prop([rep(2, inner, st(120, 50, 55, "ACTIVE RECOVERY", **REC))])
+    flat = flatten_nested_repeats(p)
+    assert {s["zone_name"] for s in flat["main_set"][0]["steps"]} == \
+        {"VO2Max", "ActiveRecovery"}

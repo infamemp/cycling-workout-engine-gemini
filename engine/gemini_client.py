@@ -101,6 +101,8 @@ def build_system_prompt() -> str:
         "toward the level of the first work step and closes with a very easy "
         "preparation pause; the cooldown only descends and ends easy. "
         "Everything else is yours.\n\n"
+        "Write zone names exactly as the schema lists them (for example "
+        "ActiveRecovery, one word, no spaces).\n\n"
         "Do NOT compute TSS/IF and do NOT write intervals.icu syntax: return "
         "structural intent only, matching the required JSON schema; the "
         "engine renders and does the math."

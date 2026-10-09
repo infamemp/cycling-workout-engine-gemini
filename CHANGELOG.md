@@ -2,7 +2,7 @@
 ## (Gemini fork: `cycling-workout-engine-gemini`)
 
 **Restore point date:** 2026-10-09 (v0.9.0 purpose guard, warmup/cooldown quality, Intervals.icu upload ready)
-**Status:** Specification v2.10 · Engine v0.9.0 · 221 tests passing
+**Status:** Specification v2.10 · Engine v0.9.0 · 224 tests passing
 
 This CHANGELOG carries forward the full history of the original
 `cycling-workout-engine` (Claude reasoning layer) up to v0.3.0/spec v2.4,
@@ -43,6 +43,11 @@ Two things came out of the first real runs of v0.8.0 ("tempo de 45 minutos"):
   It is always the last element and never the whole warmup. (The first
   v0.9.0 draft wrongly made the preparation match the first work step.)
 - **Cooldown only descends**, one smooth descent, never below the floor.
+- **Zone-name spelling is not design.** "Active Recovery" (a real Gemini
+  answer that failed the first live run) is the same zone as
+  "ActiveRecovery": names are matched ignoring case, spaces and punctuation
+  and written canonically. A name from the other system or a non-zone is
+  still rejected.
 - Order of checks: zone errors and purpose first, hand-over after, so the
   feedback Gemini receives is the most useful one.
 - **Prompt rewritten** with these criteria (what the engine checks is
@@ -53,7 +58,7 @@ Two things came out of the first real runs of v0.8.0 ("tempo de 45 minutos"):
   `confirm=True` and `ICU_API_KEY` to send, and compares the load Intervals
   reports with the engine's TSS. `pedir.py` does not import it (a test
   guards that).
-- Tests: 221 (30 new). Test mocks adapt canned warmups to the first work step
+- Tests: 224 (30 new). Test mocks adapt canned warmups to the first work step
   through `tests/conftest.py`.
 
 ## v0.8.0 — Tidy repository, workouts filed by intention (2026-10-09)

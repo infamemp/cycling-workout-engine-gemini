@@ -263,11 +263,47 @@ def _unroll_sub_repeat(st: dict, where: str) -> list[dict]:
     return [copy.deepcopy(l) for _ in range(reps) for l in leaves]
 
 
+def _zone_key(name: str) -> str:
+    return "".join(ch for ch in str(name).lower() if ch.isalnum())
+
+
+def _canonical_zone_names() -> dict:
+    from .zones import POWER_ZONES, HR_ZONES, POWER_SWEETSPOT
+    names = {z.name for z in POWER_ZONES} | {z.name for z in HR_ZONES}
+    names.add(POWER_SWEETSPOT.name)
+    return {_zone_key(n): n for n in names}
+
+
+def normalize_zone_names(proposal: dict) -> dict:
+    """Spelling is not design. "Active Recovery", "active_recovery" and
+    "ActiveRecovery" are the same zone: a name that matches a known zone once
+    case, spaces and punctuation are ignored is written canonically. A name
+    that is not a zone at all (or belongs to the other system) is left alone
+    and rejected by the normal checks. Works on a copy."""
+    canon = _canonical_zone_names()
+    out = copy.deepcopy(proposal)
+
+    def fix(step):
+        if isinstance(step, dict) and isinstance(step.get("zone_name"), str):
+            step["zone_name"] = canon.get(_zone_key(step["zone_name"]),
+                                          step["zone_name"])
+    for el in out.get("main_set") or []:
+        if not isinstance(el, dict):
+            continue
+        fix(el)
+        for st in el.get("steps") or []:
+            fix(st)
+            if isinstance(st, dict):
+                for inner in st.get("steps") or []:
+                    fix(inner)
+    return out
+
+
 def flatten_nested_repeats(proposal: dict) -> dict:
     """Return a copy of the proposal with every sub-repeat unrolled into its
     block (one level of nesting allowed; deeper is rejected). A proposal
     without sub-repeats comes back unchanged apart from the copy."""
-    out = copy.deepcopy(proposal)
+    out = normalize_zone_names(proposal)
     for i, el in enumerate(out.get("main_set") or []):
         if not isinstance(el, dict) or el.get("element") != "repeat":
             continue
