@@ -175,7 +175,8 @@ def generate_single_v2(req: GenerationRequest, *,
 
     sid = str(uuid.uuid4())[:8]
     summary = proposal.get("summary", f"{req.requested_zone} session")
-    complementary = derive_complementary_zones(proposal, req.requested_zone)
+    complementary = derive_complementary_zones(proposal, req.requested_zone,
+                                            req.mode)
 
     session = GeneratedSession(
         id=sid, generated_at=CatalogEntry.now_iso(), mode=req.mode,

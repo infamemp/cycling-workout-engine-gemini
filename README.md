@@ -4,7 +4,7 @@ An intelligent, local Python engine that generates indoor cycling workouts —
 single sessions and multi-session progressions — as ready-to-import
 [intervals.icu](https://intervals.icu) workout files (`.md`).
 
-**Version:** 0.8.0
+**Version:** 0.9.0
 **Status:** Core engine functional — no web/app frontend yet (CLI only)
 **License:** Private / All rights reserved (no open-source license applied)
 
@@ -125,6 +125,19 @@ short openers before hard work when they help. Ask for a length in your
 request ("con calentamiento de 15 minutos") and the engine uses exactly that.
 Heart-rate sessions warm up in climbing steps (heart rate lags a ramp).
 
+The warmup is one build that arrives at the level where the first work step
+begins, then closes with a short preparation (30 s to 2 min) at very low
+intensity: a pause to drink and adjust before the main set. The cooldown only
+descends. Nothing is written below 45% FTP / 60% LTHR.
+
+## Freedom with a purpose
+
+Gemini may arrange the work freely (ladders, builds, surges, over-unders),
+but the requested zone must carry at least 70% of the work, judged by the
+midpoint of each step. A Tempo session whose last blocks are sweet spot is
+sent back. Smaller touches of other zones are allowed and shown as design
+notes.
+
 ## Training load (TSS)
 
 The engine reports the load of every session the way Intervals.icu computes
@@ -243,6 +256,7 @@ cycling-workout-engine-gemini/
 │   ├── tss.py                # NP (30 s rolling), HRSS, TSS algebra, solver
 │   ├── athlete_settings.py   # reads athlete.yaml (your thresholds)
 │   ├── storage.py            # where workouts and the catalog are saved
+│   ├── intervals_upload.py   # ready, unused: dry-run-first upload to Intervals.icu
 │   ├── sections.py           # warmup / cooldown: schema, checks, building
 │   ├── shapes.py             # session-shape library loader (ideas for the prompt)
 │   ├── data/shapes.yaml      # 20 shapes + ways they chain; no intensities
@@ -277,7 +291,7 @@ cycling-workout-engine-gemini/
 python -m pytest -q
 ```
 
-191 tests, all passing without any API key (a mock transport stands in for
+221 tests, all passing without any API key (a mock transport stands in for
 the real Gemini API). GitHub Actions runs them on every push
 (`.github/workflows/tests.yml`). Coverage includes hand-calculated TSS/IF
 reference cases (NP with the rolling window, HRSS), RPE derivation, output-syntax validation, end-to-end
@@ -303,7 +317,7 @@ surges, over-unders, VO2max micro-intervals, anaerobic, heart-rate sessions).
 
 **Not yet built:**
 - CP/W′ (Critical Power) calculator — designed in the spec, not yet coded
-- Direct intervals.icu upload (currently produces a `.md` file to import manually, saved in `workouts/<intention>/`)
+- Using the intervals.icu upload from `pedir.py`: the module (`engine/intervals_upload.py`, dry-run by default, load check) is ready and tested but deliberately not wired in; for now the workout is a `.md` in `workouts/<intention>/` to paste or import
 - Any web or desktop UI — CLI only, by design, for this phase
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the complete decision history and

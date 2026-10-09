@@ -1,8 +1,8 @@
 # Cycling Workout Generator — CHANGELOG & Restore Point
 ## (Gemini fork: `cycling-workout-engine-gemini`)
 
-**Restore point date:** 2026-10-09 (v0.8.0 tidy repository, workouts filed by intention)
-**Status:** Specification v2.9 · Engine v0.8.0 · 191 tests passing
+**Restore point date:** 2026-10-09 (v0.9.0 purpose guard, warmup/cooldown quality, Intervals.icu upload ready)
+**Status:** Specification v2.10 · Engine v0.9.0 · 221 tests passing
 
 This CHANGELOG carries forward the full history of the original
 `cycling-workout-engine` (Claude reasoning layer) up to v0.3.0/spec v2.4,
@@ -13,6 +13,48 @@ record, not a description of this repo's current behavior. See `README.md`
 for the current (Gemini) architecture.
 
 ---
+
+## v0.9.0 — Freedom with a purpose; warmups and cooldowns that make sense (2026-10-09)
+
+### Why
+Two things came out of the first real runs of v0.8.0 ("tempo de 45 minutos"):
+1. Gemini designed a ladder of 76-80 / 81-85 / 86-90 % and called it Tempo.
+   The last ten minutes were sweet spot: the session had stopped being the
+   one that was asked for. v0.7.0 had removed the cage, and with it every
+   guard on what the session *is*.
+2. The warmup put the preparation in the middle and then dropped to 50-55 %;
+   the cooldown went 55→45 % and then sat at 40-45 %.
+
+### What changed
+- **Purpose guard.** Each work step is classified by the midpoint of its
+  range (recovery steps excluded, repeats expanded; the label does not
+  count). At least **70 %** of the work must sit in the requested zone or
+  the proposal is rejected with the exact numbers ("only 67 % of the work
+  sits in Tempo; the rest is SweetSpot 33 %"). Between 70 and 90 % it is a
+  design note. For Tempo the core ends at a midpoint of 86 % FTP; for a
+  SweetSpot request the core is 84-97 %.
+- **Warmup = build + pause.** The warmup proper is one build: starts easy,
+  never below 45 % FTP / 60 % LTHR, rises without peaking and falling back,
+  and arrives where the main set begins (within 15 points below to 5 above
+  the first work step, judged against at most 100 %, so hard sessions use
+  openers, not the full effort). It closes with the **preparation**: a
+  30 s to 2 min step at very low intensity (about 50 % FTP, at most 60 %
+  FTP / 75 % LTHR) so the athlete can drink and adjust before the main set.
+  It is always the last element and never the whole warmup. (The first
+  v0.9.0 draft wrongly made the preparation match the first work step.)
+- **Cooldown only descends**, one smooth descent, never below the floor.
+- Order of checks: zone errors and purpose first, hand-over after, so the
+  feedback Gemini receives is the most useful one.
+- **Prompt rewritten** with these criteria (what the engine checks is
+  listed, with the reasons).
+- **Intervals.icu upload: ready, unused.** `engine/intervals_upload.py`
+  builds the payload (calendar bulk with upsert, or library), defaults to a
+  dry run that shows the exact payload and the copy/paste text, needs
+  `confirm=True` and `ICU_API_KEY` to send, and compares the load Intervals
+  reports with the engine's TSS. `pedir.py` does not import it (a test
+  guards that).
+- Tests: 221 (30 new). Test mocks adapt canned warmups to the first work step
+  through `tests/conftest.py`.
 
 ## v0.8.0 — Tidy repository, workouts filed by intention (2026-10-09)
 

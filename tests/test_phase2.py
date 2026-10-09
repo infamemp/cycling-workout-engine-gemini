@@ -11,22 +11,27 @@ from __future__ import annotations
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
 from engine.models import GenerationRequest
 from engine.generator_v2 import generate_single_v2
 from engine.proposal import validate_proposal, ProposalRejected
 
 
 # --- Warmup / cooldown helpers (v0.6.0: designed per session) ----------------
-# _W/_C rebuild the pre-v0.6 fixed structure (45-75% ramp + 45-55% block,
-# 75-45% ramp) so the numbers these tests were written against still hold.
+# _W/_C build a valid warmup (ramp, then the preparation last) and cooldown
+# (one descent) whatever the main set does.
 
-def _W(ramp_s=600, steady_s=0):
-    w = [{"element": "ramp", "duration_seconds": ramp_s,
-          "from_pct": 45, "to_pct": 75}]
-    if steady_s:
-        w.append({"element": "step", "duration_seconds": steady_s,
-                  "low_pct": 45, "high_pct": 55, "is_preparation": True})
-    return w
+def _W(ramp_s=600, steady_s=60, prep=(70, 75)):
+    """A valid warmup: a ramp, a hold at the build level, then the closing
+    pause (30 s, very easy). `prep` is the build level the ramp arrives at."""
+    out = [{"element": "ramp", "duration_seconds": ramp_s,
+            "from_pct": 45, "to_pct": prep[0]}]
+    if steady_s > 30:
+        out.append({"element": "step", "duration_seconds": steady_s - 30,
+                    "low_pct": prep[0], "high_pct": prep[1]})
+    out.append({"element": "step", "duration_seconds": 30,
+                "low_pct": 50, "high_pct": 55, "is_preparation": True})
+    return out
 
 
 def _C(seconds=300):
@@ -37,7 +42,8 @@ def _C(seconds=300):
 def _WHR(stair):
     out = [{"element": "step", "duration_seconds": sec,
             "low_pct": lo, "high_pct": hi} for lo, hi, sec in stair]
-    out[-1]["is_preparation"] = True       # v0.7.0: the last step prepares
+    out.append({"element": "step", "duration_seconds": 60, "low_pct": 62,
+                "high_pct": 68, "is_preparation": True})   # the closing pause
     return out
 
 
@@ -75,7 +81,7 @@ def mock_hr_tempo(*_args, **_kw):
     return {
         "structural_pattern": "classic_interval",
         "summary": "HR Tempo 3x8min",
-        "warmup": _WHR([[50, 60, 120], [60, 70, 120], [70, 80, 120]]), "cooldown": _CHR(300),
+        "warmup": _WHR([[60, 70, 120], [70, 80, 120], [80, 90, 120]]), "cooldown": _CHR(300),
         "main_set": [
             {"element": "repeat", "repeats": 3, "steps": [
                 {"duration_seconds": 480, "low_pct": 90, "high_pct": 93,
@@ -138,7 +144,7 @@ def test_power_proposal_flows_to_markdown():
     sess = generate_single_v2(req, transport=mock_power_tempo)
     md = sess.markdown_output
     assert "# Warmup" in md and "# Main Set" in md and "# Cooldown" in md
-    assert "2m 45-55%" in md                 # fixed power prep block
+    assert "30s 50-55%" in md                 # the closing pause, last in the warmup
     assert "4x" in md                        # 4 repeats
     assert sess.structural_pattern == "classic_interval"
     assert sess.complementary_zones == ["VO2Max"]
@@ -156,15 +162,27 @@ def test_hr_proposal_uses_staircase_and_lthr():
     assert "ramp" not in warmup_section      # staircase, not ramp
     # v0.6.0: no fixed HR prep block — the warmup is the proposal's steps
     assert "2m 60-80% LTHR" not in md
-    assert warmup_section.count("% LTHR") == 3
+    assert warmup_section.count("% LTHR") == 4   # 3 climbing steps + the pause
 
 
-def test_complementary_dominating_is_a_warning_not_a_rejection():
-    # v0.7.0: how much of the work sits in the requested zone is the coach's
-    # design. The session is built and the athlete is told.
+def test_complementary_dominating_is_rejected_by_the_purpose_guard():
+    # v0.9.0: the freedom to add other zones stops where the session would
+    # stop being the one that was asked for.
     req = GenerationRequest(kind="single_session", mode="power",
                             requested_zone="Tempo")
-    sess = generate_single_v2(req, transport=mock_complementary_dominates)
+    with pytest.raises(ProposalRejected, match="stay a Tempo session"):
+        generate_single_v2(req, transport=mock_complementary_dominates)
+
+
+def test_a_sizeable_touch_is_allowed_and_reported():
+    def mock(*_a, **_k):
+        p = mock_complementary_dominates()
+        p["main_set"][0]["duration_seconds"] = 900
+        p["main_set"][1]["duration_seconds"] = 240
+        return p
+    req = GenerationRequest(kind="single_session", mode="power",
+                            requested_zone="Tempo")
+    sess = generate_single_v2(req, transport=mock)
     assert any("outside Tempo" in w for w in sess.warnings)
     assert sess.complementary_zones == ["VO2Max"]
 
@@ -334,7 +352,7 @@ def test_progression_day1_fits_budget_exactly():
     result = generate_progression(req, transport=mock_fits)
     md = result.sessions[0].markdown_output
     assert "5m ramp" in md  # engine-sized warmup, not the 10min default
-    assert "1m 45-55%" in md  # engine-sized prep, not the 2min default
+    assert "30s 50-55%" in md  # engine-sized pause, not the 2min default
 
 
 # ============================================================
@@ -405,7 +423,7 @@ def test_minor_budget_shortfall_is_allowed():
     # 58 min of a 60-min budget (real-world case, ~3.3% under) must pass.
     proposal = {
         "structural_pattern": "continuous", "summary": "minor shortfall ok",
-        "warmup": _W(600, 60), "cooldown": _C(300),
+        "warmup": _W(600, 60, prep=(52, 58)), "cooldown": _C(300),
         "main_set": [
             {"element": "step", "duration_seconds": 600, "low_pct": 56,
              "high_pct": 63, "zone_name": "Endurance"},
@@ -721,7 +739,7 @@ def test_a1_zone_spill_is_noted_not_rejected():
     """v0.7.0 (was A1): a 'Tempo' step reaching past the zone is a design
     choice — a build, a surge. It is reported as a warning."""
     from engine.proposal import validate_proposal, ProposalRejected
-    for lo, hi in ((75, 105), (60, 76), (74, 90)):
+    for lo, hi in ((76, 92), (74, 90)):
         bad = {"structural_pattern": "continuous", "summary": "spill",
         "warmup": _W(600, 120), "cooldown": _C(300),
                "main_set": [{"element": "step", "duration_seconds": 1200,
@@ -743,7 +761,7 @@ def test_a1_full_zone_range_accepted():
                               "zone_name": "Tempo"}]}
     validate_proposal(ok_tempo, mode="power", dominant_zone="Tempo")
     ok_neuro = {"structural_pattern": "classic_interval", "summary": "sprints",
-    "warmup": _W(600, 120), "cooldown": _C(300),
+    "warmup": _W(600, 120, prep=(95, 100)), "cooldown": _C(300),
                 "main_set": [{"element": "repeat", "repeats": 6, "steps": [
                     {"duration_seconds": 10, "low_pct": 150, "high_pct": 200,
                      "zone_name": "Neuromuscular"},

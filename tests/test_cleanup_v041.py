@@ -38,7 +38,9 @@ def _hr_proposal(stair):
         else:
             warm.append({"element": "step", "low_pct": t[0] if t else None})
     if warm and isinstance(warm[-1].get("duration_seconds"), int):
-        warm[-1]["is_preparation"] = True       # v0.7.0: every warmup has one
+        # every warmup closes with a very easy pause (the preparation)
+        warm.append({"element": "step", "duration_seconds": 60, "low_pct": 62,
+                     "high_pct": 70, "is_preparation": True})
     return {
         "structural_pattern": "classic_interval",
         "summary": "HR tempo",
@@ -63,12 +65,12 @@ def _check(stair):
 # --- HR staircase content ------------------------------------------------------
 
 def test_staircase_valid_ascending_passes():
-    _check([[50, 60, 120], [60, 70, 120], [70, 80, 120]])
+    _check([[60, 70, 120], [70, 80, 120], [80, 90, 120]])
 
 
 def test_staircase_equal_lows_pass():
     # Holding a level is not stepping down.
-    _check([[60, 70, 120], [60, 72, 120]])
+    _check([[70, 80, 120], [70, 92, 120]])
 
 
 def test_staircase_descending_rejected():
@@ -118,7 +120,7 @@ def test_ramps_are_power_only():
                                         zone_name="ActiveRecovery")
     p["warmup"][0].update(from_pct=45, to_pct=70)
     p["warmup"].append({"element": "step", "duration_seconds": 60,
-                        "low_pct": 70, "high_pct": 75, "is_preparation": True})
+                        "low_pct": 50, "high_pct": 55, "is_preparation": True})
     validate_proposal(p, mode="power", dominant_zone="Tempo")
 
 
@@ -140,7 +142,7 @@ def test_unknown_step_field_rejected():
 
 def test_one_level_of_sub_repeat_is_unrolled():
     from engine.proposal import flatten_nested_repeats
-    p = _hr_proposal([[50, 60, 120], [60, 70, 60]])
+    p = _hr_proposal([[70, 80, 120], [80, 90, 60]])
     p["main_set"] = [{"element": "repeat", "repeats": 2, "steps": [
         {"element": "repeat", "repeats": 3, "steps": [
             {"duration_seconds": 30, "low_pct": 90, "high_pct": 93,

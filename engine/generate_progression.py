@@ -125,7 +125,8 @@ def generate_progression(req: GenerationRequest, *,
         summary = sess_proposal.get("summary",
                                     f"{req.requested_zone} session {idx}")
         complementary = derive_complementary_zones(sess_proposal,
-                                                   req.requested_zone)
+                                                   req.requested_zone,
+                                                   req.mode)
 
         session = GeneratedSession(
             id=sid, generated_at=CatalogEntry.now_iso(), mode=req.mode,

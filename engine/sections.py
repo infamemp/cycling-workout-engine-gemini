@@ -20,12 +20,17 @@ Hard checks here are physiological sanity and arithmetic only, never a
 template: a warmup starts easy; a cooldown stays easy and ends easy; both
 stay within a sanity length unless the user asked for more.
 
-A warmup always carries a PREPARATION interval (v0.7.0): a short step or
-ramp (30 s to 2 min) flagged "is_preparation": true that readies the body
-for the main block. What it is — a few cadence spin-ups, an opener near
-the first work intensity, a short build — is the coach's design; that it is
-there is not optional. A warmup of two minutes or more cannot be only the
-preparation.
+A warmup always ENDS with a PREPARATION interval (v0.7.0, placed last and made
+easy in v0.9.0): a short step (30 s to 2 min) flagged "is_preparation": true
+at VERY LOW intensity. It is the pause before the main set: time to drink,
+adjust the bike, breathe. The warmup proper is everything BEFORE it, a
+single build that arrives ready (its last level is close to where the main
+set begins, check_handover). A warmup of two minutes or more cannot be only
+the preparation.
+
+v0.9.0 also fixed what the first designed sections got wrong: no target goes
+under 45% FTP / 60% LTHR, the build does not dip, and a cooldown only comes
+down.
 
 A section is a list of elements, the same shape as the main set plus a ramp:
     {"element": "step",  "duration_seconds", "low_pct", "high_pct",
@@ -55,6 +60,18 @@ COOLDOWN_MAX_SECONDS = 15 * 60
 EASY_START = {"power": 65, "hr": 80}
 COOLDOWN_CEILING = {"power": 75, "hr": 89}
 EASY_END = {"power": 65, "hr": 80}
+# The preparation is a pause: very low intensity (midpoint, % of FTP / LTHR).
+PREP_CEILING = {"power": 60, "hr": 75}
+
+# Lowest target worth writing in a warmup or cooldown (% of FTP / of LTHR).
+LEVEL_FLOOR = {"power": 45, "hr": 60}
+# The preparation hands over to the main set: its level sits between
+# (first work low - BELOW) and (first work high + ABOVE).
+HANDOVER_BELOW = 15
+HANDOVER_ABOVE = 5
+# Slack, in percentage points, for "never dips" and "only comes down".
+WARMUP_DIP_TOLERANCE = 10
+COOLDOWN_RISE_TOLERANCE = 3
 
 # Preparation interval (warmup only), seconds.
 PREP_MIN_SECONDS = 30
@@ -89,8 +106,9 @@ SECTION_SCHEMA = {
             "is_preparation": {
                 "type": "boolean",
                 "description": "WARMUP ONLY. Mark the short (30 s - 2 min) "
-                               "step or ramp that prepares the body for the "
-                               "main block. Every warmup has one."},
+                               "VERY EASY step that closes the warmup: a "
+                               "pause to drink and adjust before the main "
+                               "block. Every warmup has one, last."},
             "repeats": {"type": "integer", "minimum": 1},
             "steps": {
                 "type": "array", "minItems": 1,
@@ -154,7 +172,22 @@ def section_seconds(elements: list) -> int:
     return total
 
 
-def _check_preparation(elements: list, total: int) -> None:
+def _level_span(el: dict) -> tuple[float, float]:
+    """(start, end) level of an element; a repeat block gives its first and
+    last step."""
+    k = el.get("element")
+    if k == "ramp":
+        return float(el["from_pct"]), float(el["to_pct"])
+    if k == "step":
+        m = (el["low_pct"] + el["high_pct"]) / 2.0
+        return m, m
+    steps = el["steps"]
+    f, l = steps[0], steps[-1]
+    return ((f["low_pct"] + f["high_pct"]) / 2.0,
+            (l["low_pct"] + l["high_pct"]) / 2.0)
+
+
+def _check_preparation(elements: list, total: int, mode: str) -> None:
     flagged = []
     for i, el in enumerate(elements):
         v = el.get("is_preparation")
@@ -167,22 +200,112 @@ def _check_preparation(elements: list, total: int) -> None:
             raise SectionRejected(
                 f"warmup element {i}: the preparation is a step or a ramp, "
                 f"not a repeat block")
-        flagged.append(el)
+        flagged.append(i)
     if not flagged:
         raise SectionRejected(
-            "the warmup has no preparation interval — mark one step or ramp "
-            f"of {PREP_MIN_SECONDS} s to {PREP_MAX_SECONDS // 60} min with "
-            "is_preparation: true; it readies the body for the main block")
-    for el in flagged:
-        d = el["duration_seconds"]
-        if not PREP_MIN_SECONDS <= d <= PREP_MAX_SECONDS:
-            raise SectionRejected(
-                f"the preparation interval lasts {d}s — keep it short, "
-                f"between {PREP_MIN_SECONDS}s and {PREP_MAX_SECONDS}s")
-    if total >= PREP_NOT_WHOLE_FROM and sum(
-            el["duration_seconds"] for el in flagged) >= total:
+            "the warmup has no preparation interval — end it with one step "
+            f"or ramp of {PREP_MIN_SECONDS} s to {PREP_MAX_SECONDS // 60} "
+            "min marked is_preparation: true; it readies the body for the "
+            "main block")
+    if flagged != [len(elements) - 1]:
+        raise SectionRejected(
+            "the preparation interval must be the LAST part of the warmup "
+            "(and the only one): the athlete rolls straight from it into the "
+            "main set, with nothing easier in between")
+    el = elements[-1]
+    d = el["duration_seconds"]
+    if not PREP_MIN_SECONDS <= d <= PREP_MAX_SECONDS:
+        raise SectionRejected(
+            f"the preparation interval lasts {d}s — keep it short, "
+            f"between {PREP_MIN_SECONDS}s and {PREP_MAX_SECONDS}s")
+    mid = (el["low_pct"] + el["high_pct"]) / 2 if el.get("element") == "step" \
+        else max(el["from_pct"], el["to_pct"])
+    if el.get("element") != "step" or mid > PREP_CEILING[mode]:
+        raise SectionRejected(
+            f"the preparation is a pause before the main set: one easy step "
+            f"at {PREP_CEILING[mode]}% or below (time to drink and adjust), "
+            f"not {mid:g}%. The warmup itself is what comes before it")
+    if total >= PREP_NOT_WHOLE_FROM and d >= total:
         raise SectionRejected(
             "the preparation cannot be the whole warmup — build up to it")
+
+
+def _check_floor(kind: str, elements: list, mode: str) -> None:
+    floor = LEVEL_FLOOR[mode]
+    for i, el in enumerate(elements):
+        vals = []
+        if el.get("element") == "ramp":
+            vals = [el["from_pct"], el["to_pct"]]
+        elif el.get("element") == "step":
+            vals = [el["low_pct"]]
+        else:
+            vals = [s["low_pct"] for s in el["steps"]]
+        low = min(vals)
+        if low < floor:
+            raise SectionRejected(
+                f"{kind} element {i} goes down to {low:g}% — nothing is "
+                f"written below {floor}% in {mode} mode; keep every target "
+                f"at {floor}% or above")
+
+
+def _build_of(elements: list) -> list:
+    """The warmup proper: everything before the closing preparation."""
+    return elements[:-1] if elements and elements[-1].get("is_preparation") is True \
+        else elements
+
+
+def _check_warmup_shape(elements: list, mode: str) -> None:
+    """The build rises; it does not peak and fall back before the pause."""
+    spans = [_level_span(el) for el in _build_of(elements)
+             if el.get("element") != "repeat"]
+    if len(spans) < 2:
+        return
+    end = spans[-1][1]
+    peak = max(max(s) for s in spans[:-1])
+    if end < peak - WARMUP_DIP_TOLERANCE:
+        raise SectionRejected(
+            f"the warmup builds to {peak:g}% and then falls back to {end:g}% "
+            f"before its closing pause: order the build from easy to hard so "
+            f"it ends at its highest level")
+
+
+def _check_cooldown_shape(elements: list) -> None:
+    """A cooldown only comes down: no element starts above where the one
+    before it ended."""
+    prev_end = None
+    for i, el in enumerate(elements):
+        start, end = _level_span(el)
+        if prev_end is not None and start > prev_end + COOLDOWN_RISE_TOLERANCE:
+            raise SectionRejected(
+                f"cooldown element {i} starts at {start:g}% after the one "
+                f"before it ended at {prev_end:g}%: a cooldown only comes "
+                f"down, in one smooth descent")
+        prev_end = end
+
+
+HANDOVER_CAP = {"power": 100, "hr": 100}
+
+
+def check_handover(warmup: list, first_work: tuple[float, float] | None,
+                   mode: str) -> None:
+    """The warmup's build arrives where the main set begins: its last level is
+    close to the first work step's range, not far below it (a cold start)
+    and not above it (spending the legs before the work). The closing pause
+    is not part of the build."""
+    if not first_work or not warmup:
+        return
+    cap = HANDOVER_CAP[mode]            # openers, not the full effort, before hard work
+    build = _build_of(warmup)
+    if not build:
+        return
+    lo, hi = min(first_work[0], cap), min(first_work[1], cap)
+    level = _level_span(build[-1])[1]
+    if level < lo - HANDOVER_BELOW or level > hi + HANDOVER_ABOVE:
+        raise SectionRejected(
+            f"the warmup builds up to {level:g}% but the main set begins at "
+            f"{lo:g}-{hi:g}%: the build should arrive between "
+            f"{lo - HANDOVER_BELOW:g}% and {hi + HANDOVER_ABOVE:g}% so the "
+            f"athlete rolls into the work already ready")
 
 
 def validate_section(kind: str, elements, *, mode: str,
@@ -248,7 +371,7 @@ def validate_section(kind: str, elements, *, mode: str,
                 f"warmup starts at {values[0][0]:g}% — start easy (at or "
                 f"below {EASY_START[mode]}%) and build")
         if mode == "hr":
-            starts = [a for a, _ in values]
+            starts = [a for a, _ in _flat_values(_build_of(elements))]
             if any(b < a for a, b in zip(starts, starts[1:])):
                 raise SectionRejected(
                     "HR warmup must climb step by step (a staircase), never "
@@ -279,8 +402,12 @@ def validate_section(kind: str, elements, *, mode: str,
         raise SectionRejected(
             f"{kind} of {total // 60} min is over the {cap // 60} min sanity "
             f"limit — size it to the session")
+    _check_floor(kind, elements, mode)
     if kind == "warmup":
-        _check_preparation(elements, total)
+        _check_warmup_shape(elements, mode)
+        _check_preparation(elements, total, mode)
+    else:
+        _check_cooldown_shape(elements)
     return total
 
 
@@ -357,7 +484,7 @@ def default_sections(mode: str, total_seconds: Optional[int],
     """Simple sections for the deterministic offline generator, which has no
     reasoning layer: ~5 min warmup and 3 min cooldown up to 45-min sessions,
     10 and 5 beyond. A requested duration is used as given. The warmup ends
-    with a short preparation interval (60 s, 90 s in longer warmups)."""
+    with a short, very easy pause (60 s, 90 s in longer warmups)."""
     short = total_seconds is not None and total_seconds <= 45 * 60
     w = warmup_seconds or (300 if short else 600)
     c = cooldown_seconds or (180 if short else 300)
@@ -366,18 +493,18 @@ def default_sections(mode: str, total_seconds: Optional[int],
     if mode == "power":
         if rest <= 0:
             warm = [{"element": "step", "duration_seconds": w,
-                     "low_pct": 60, "high_pct": 70, "is_preparation": True}]
+                     "low_pct": 50, "high_pct": 55, "is_preparation": True}]
         else:
             warm = [{"element": "ramp", "duration_seconds": rest,
                      "from_pct": 45, "to_pct": 65},
                     {"element": "step", "duration_seconds": prep,
-                     "low_pct": 70, "high_pct": 75, "is_preparation": True}]
+                     "low_pct": 50, "high_pct": 55, "is_preparation": True}]
         cool = [{"element": "ramp", "duration_seconds": c,
                  "from_pct": 65, "to_pct": 45}]
     else:
         if rest <= 0:
             warm = [{"element": "step", "duration_seconds": w,
-                     "low_pct": 70, "high_pct": 78, "is_preparation": True}]
+                     "low_pct": 62, "high_pct": 70, "is_preparation": True}]
         else:
             m = 2 if rest >= 240 else 1
             base, extra = divmod(rest, m)
@@ -387,7 +514,7 @@ def default_sections(mode: str, total_seconds: Optional[int],
                      "low_pct": lo, "high_pct": lo + 8}
                     for i, lo in enumerate(levels)]
             warm.append({"element": "step", "duration_seconds": prep,
-                         "low_pct": 76, "high_pct": 84,
+                         "low_pct": 62, "high_pct": 70,
                          "is_preparation": True})
         cool = [{"element": "step", "duration_seconds": c,
                  "low_pct": 65, "high_pct": 75}]

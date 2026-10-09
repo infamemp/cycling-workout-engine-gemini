@@ -18,7 +18,8 @@ Division of responsibility (confirmed):
 from __future__ import annotations
 import copy
 from .zones import zones_for_mode, zone_by_name
-from .sections import SECTION_SCHEMA, validate_section, SectionRejected
+from .sections import (SECTION_SCHEMA, validate_section, check_handover,
+                       SectionRejected)
 
 # v0.7.0 — flexibility. The validator splits what it finds in two:
 #   - REJECTIONS protect against errors: unknown zone systems, impossible
@@ -140,9 +141,9 @@ PROPOSAL_TOOL_SCHEMA = {
                 "The warmup, designed for THIS session (not a template): "
                 "start easy and build; brief (~5 min) in short sessions, "
                 "longer as duration and intensity grow. It ALWAYS includes "
-                "a short preparation interval (30 s - 2 min, "
-                "is_preparation=true) that readies the body for the main "
-                "block. Power mode may use ramps; HR mode uses climbing "
+                "a closing preparation: a very easy pause (30 s - 2 min, "
+                "is_preparation=true, about 50% FTP) to drink and adjust "
+                "before the main block. Power mode may use ramps; HR mode uses climbing "
                 "steps only.")),
             "cooldown": dict(SECTION_SCHEMA, description=(
                 "The cooldown, designed for THIS session: easy all the way "
@@ -330,6 +331,90 @@ def _check_unknown_fields(proposal: dict) -> None:
                         f"main_set element {i}")
 
 
+# --- Purpose fidelity (v0.9.0) ---------------------------------------------
+# Freedom to arrange the work is not freedom to change what the session is.
+# Each work step is classified by the MIDPOINT of its range (the label the
+# model wrote on it does not count), and at least PURPOSE_MIN_SHARE of the
+# work time has to fall in the requested zone. The rest may be touches,
+# surges, builds: up to the remainder, never the bulk.
+#
+# Sweet spot is an overlay (84-97%) across the top of Tempo and the bottom of
+# Threshold. For a Tempo or Sweet-spot request a midpoint in it counts as
+# SweetSpot, so a "tempo" session that climbs into 86-90% is a sweet-spot
+# session in part, and is held to the share rule like any other drift.
+# A Tempo session's core ends where the sweet-spot work starts: a step whose
+# midpoint is 86% FTP or more is sweet spot, whatever it is labelled.
+TEMPO_CORE_TOP = 86
+PURPOSE_MIN_SHARE = 0.70
+_PURPOSE_WARN_SHARE = 0.90      # below this, the athlete is told
+
+
+def classify_midpoint(mode: str, mid: float, requested: str) -> str:
+    """The zone a step with this midpoint belongs to, as seen from the
+    requested zone."""
+    if mode == "power" and requested in ("Tempo", "SweetSpot"):
+        ss = zone_by_name("power", "SweetSpot")
+        if requested == "Tempo":
+            # Tempo's core stops where sweet-spot work starts (midpoint 86%).
+            if mid < TEMPO_CORE_TOP and mid >= 75:
+                return "Tempo"
+            if TEMPO_CORE_TOP <= mid < ss.high_pct:
+                return "SweetSpot"
+        elif ss.low_pct <= mid < ss.high_pct:     # SweetSpot request: 84-97 is the core
+            return "SweetSpot"
+    from .zones import zone_for_percent
+    return zone_for_percent(mode, mid).name
+
+
+def work_seconds_by_class(proposal: dict, mode: str,
+                          requested: str) -> dict[str, int]:
+    """Work seconds (recovery steps left out, repeats expanded) by the class
+    of each step's midpoint. Works on a flat (unrolled) proposal."""
+    out: dict[str, int] = {}
+    for el in proposal.get("main_set") or []:
+        if el.get("element") == "repeat":
+            n = el.get("repeats", 1)
+            steps = [(s, n) for s in el.get("steps") or []]
+        else:
+            steps = [(el, 1)]
+        for st, n in steps:
+            if st.get("is_recovery"):
+                continue
+            mid = (st["low_pct"] + st["high_pct"]) / 2.0
+            c = classify_midpoint(mode, mid, requested)
+            out[c] = out.get(c, 0) + int(st["duration_seconds"]) * n
+    return out
+
+
+def check_purpose(proposal: dict, mode: str, requested: str,
+                  warnings: list[str]) -> None:
+    secs = work_seconds_by_class(proposal, mode, requested)
+    total = sum(secs.values())
+    if total <= 0:
+        return                      # a pure recovery session has no work
+    on = secs.get(requested, 0)
+    share = on / total
+    if share < PURPOSE_MIN_SHARE:
+        others = ", ".join(
+            f"{k} {v * 100 // total}%"
+            for k, v in sorted(secs.items(), key=lambda kv: -kv[1])
+            if k != requested)
+        raise ProposalRejected(
+            f"only {share * 100:.0f}% of the work sits in {requested} "
+            f"(by each step's midpoint; the rest is {others}). A session may "
+            f"touch other zones but must stay a {requested} session: at least "
+            f"{PURPOSE_MIN_SHARE * 100:.0f}% of the work in {requested}. "
+            f"Rebuild the main set so the {requested} work carries it, or "
+            f"keep the extra work to short touches")
+    if share < _PURPOSE_WARN_SHARE:
+        others = ", ".join(
+            f"{k} {v * 100 // total}%" for k, v in
+            sorted(secs.items(), key=lambda kv: -kv[1]) if k != requested)
+        warnings.append(
+            f"{(1 - share) * 100:.0f}% of the work is outside {requested} "
+            f"({others}) — touches on a {requested} session")
+
+
 def main_zone_seconds(proposal: dict, dominant_zone: str) -> dict[str, int]:
     """Work seconds per zone name in the main set (recovery steps left out,
     repeats expanded). Works on a flat (unrolled) proposal."""
@@ -348,14 +433,30 @@ def main_zone_seconds(proposal: dict, dominant_zone: str) -> dict[str, int]:
     return out
 
 
-def derive_complementary_zones(proposal: dict, dominant_zone: str) -> list[str]:
+def derive_complementary_zones(proposal: dict, dominant_zone: str,
+                               mode: str = "power") -> list[str]:
     """The other zones the main set really works in, derived from what was
-    built (v0.7.0: the engine reports them; the proposal no longer has to
-    declare them correctly), plus any zone the proposal declared."""
+    built (the engine reports them from each step's midpoint, not from the
+    labels the model wrote), plus any zone the proposal declared."""
     declared = {c.get("zone") for c in proposal.get("complementary_stimuli", [])
                 if isinstance(c, dict) and c.get("zone")}
-    used = set(main_zone_seconds(proposal, dominant_zone)) - {dominant_zone}
+    try:
+        used = set(work_seconds_by_class(proposal, mode, dominant_zone))
+    except (KeyError, TypeError):
+        used = set(main_zone_seconds(proposal, dominant_zone))
     return sorted((declared | used) - {dominant_zone})
+
+
+def _first_work_range(proposal: dict):
+    """(low, high) of the first non-recovery step of the main set, or None."""
+    for el in proposal.get("main_set") or []:
+        steps = el.get("steps") if el.get("element") == "repeat" else [el]
+        for st in steps or []:
+            if (isinstance(st, dict) and not st.get("is_recovery")
+                    and isinstance(st.get("low_pct"), (int, float))
+                    and isinstance(st.get("high_pct"), (int, float))):
+                return float(st["low_pct"]), float(st["high_pct"])
+    return None
 
 
 def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
@@ -429,26 +530,23 @@ def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
         else:
             raise ProposalRejected(f"unknown element kind {kind!r}")
 
-    # --- Purpose (v0.7.0). The requested zone is the session's purpose: it
-    # has to be in the session. How much of the work time it takes is the
-    # coach's design (touches, surges, progressions, a build through zones),
-    # so a different split is a warning, not a rejection.
+    # --- Purpose. The requested zone is the session's purpose: it has to be
+    # in the session (v0.7.0) and it has to carry it: at least 70% of the
+    # work by each step's midpoint (v0.9.0). The rest may be touches, surges
+    # or a short build, reported as a note.
     if dominant_zone not in zones_named:
         raise ProposalRejected(
             f"the requested zone {dominant_zone} does not appear in the main "
             f"set — the session has to work in the zone that was asked for")
-    secs = main_zone_seconds(proposal, dominant_zone)
-    dominant_work = secs.get(dominant_zone, 0)
-    other_work = sum(v for k, v in secs.items() if k != dominant_zone)
-    if other_work > dominant_work:
-        biggest = max((k for k in secs if k != dominant_zone),
-                      key=lambda k: secs[k])
-        warnings.append(
-            f"most of the work time ({other_work // 60} min) sits outside "
-            f"{dominant_zone}, mainly in {biggest}; the session reads as "
-            f"{biggest} work with {dominant_zone} in it — say so in the "
-            f"summary")
+    check_purpose(proposal, mode, dominant_zone, warnings)
     warnings = list(dict.fromkeys(warnings))
+
+    # The warmup ends where the main set begins.
+    try:
+        check_handover(proposal.get("warmup"), _first_work_range(proposal),
+                       mode)
+    except SectionRejected as e:
+        raise ProposalRejected(str(e))
 
     # --- Budget conservation (pure arithmetic, spec 15) ---
     # The ceiling (never exceed the budget) is hard. The floor is deliberately
