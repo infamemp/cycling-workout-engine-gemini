@@ -65,6 +65,12 @@ PARSE_TOOL_SCHEMA = {
                                  "description": "Only if the user asked for a "
                                  "specific cooldown length ('enfriamiento de 5 "
                                  "minutos'); otherwise omit."},
+            "level": {"type": "string", "enum": ["basic", "intermediate", "advanced"],
+                      "description": "Only if the user stated the rider's "
+                      "level: 'basico', 'principiante', 'novato', 'beginner', "
+                      "'basic' -> basic; 'intermedio', 'intermediate' -> "
+                      "intermediate; 'avanzado', 'experto', 'advanced' -> "
+                      "advanced. Otherwise omit."},
             "target_tss": {"type": "number"},
             "target_if": {"type": "number"},
             "interpretation_note": {

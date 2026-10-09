@@ -4,7 +4,7 @@ An intelligent, local Python engine that generates indoor cycling workouts —
 single sessions and multi-session progressions — as ready-to-import
 [intervals.icu](https://intervals.icu) workout files (`.md`).
 
-**Version:** 0.9.0
+**Version:** 0.10.0
 **Status:** Core engine functional — no web/app frontend yet (CLI only)
 **License:** Private / All rights reserved (no open-source license applied)
 
@@ -27,6 +27,7 @@ Request a workout in plain language:
 python pedir.py "resistencia aerobica de 1 hora"
 python pedir.py "una progresion de tempo empezando en 30 minutos"
 python pedir.py "vo2 max 45 min por frecuencia cardiaca"
+python pedir.py "tempo de 45 minutos nivel basico"
 ```
 
 Works in **Spanish or English** — the language is auto-detected from your
@@ -137,6 +138,15 @@ but the requested zone must carry at least 70% of the work, judged by the
 midpoint of each step. A Tempo session whose last blocks are sweet spot is
 sent back. Smaller touches of other zones are allowed and shown as design
 notes.
+
+## Rider level
+
+Add a level to the request ("nivel básico", "para principiante",
+"intermediate", "advanced") and Gemini cuts the same work differently: shorter
+blocks with easy recoveries for a beginner, long continuous blocks for an
+advanced rider. The zone, the amount of work and its intensity do not change,
+and the engine checks nothing about the level: it is a design criterion, not a
+rule. Without a level the session is designed as before.
 
 ## Training load (TSS)
 
@@ -291,7 +301,7 @@ cycling-workout-engine-gemini/
 python -m pytest -q
 ```
 
-224 tests, all passing without any API key (a mock transport stands in for
+232 tests, all passing without any API key (a mock transport stands in for
 the real Gemini API). GitHub Actions runs them on every push
 (`.github/workflows/tests.yml`). Coverage includes hand-calculated TSS/IF
 reference cases (NP with the rolling window, HRSS), RPE derivation, output-syntax validation, end-to-end

@@ -102,6 +102,7 @@ def generate_single_v2(req: GenerationRequest, *,
             rejection_feedback=last_error,  # A4: correct, don't guess blind
             warmup_seconds=req.warmup_seconds,
             cooldown_seconds=req.cooldown_seconds,
+            level=req.level,
         )
         try:
             # One level of sub-repeat is allowed; the platform has no nested

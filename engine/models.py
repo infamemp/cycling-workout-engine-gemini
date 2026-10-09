@@ -67,6 +67,10 @@ class GenerationRequest:
     # A warmup / cooldown length the user asked for; adopted exactly.
     warmup_seconds: Optional[int] = None
     cooldown_seconds: Optional[int] = None
+    # Optional level of the person who will ride it: basic | intermediate |
+    # advanced. A design criterion for the reasoning layer only (how the work
+    # is cut into blocks); the engine validates nothing about it.
+    level: Optional[str] = None
     athlete: Athlete = field(default_factory=Athlete)
     progression: Optional[ProgressionSpec] = None
 

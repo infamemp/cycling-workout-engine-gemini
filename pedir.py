@@ -131,6 +131,8 @@ def main() -> int:
         target_if=parsed.get("target_if"),
         warmup_seconds=(parsed.get("warmup_minutes") or 0) * 60 or None,
         cooldown_seconds=(parsed.get("cooldown_minutes") or 0) * 60 or None,
+        level=parsed.get("level") if parsed.get("level") in
+        ("basic", "intermediate", "advanced") else None,
         athlete=athlete,
     )
 

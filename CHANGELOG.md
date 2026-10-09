@@ -1,8 +1,8 @@
 # Cycling Workout Generator — CHANGELOG & Restore Point
 ## (Gemini fork: `cycling-workout-engine-gemini`)
 
-**Restore point date:** 2026-10-09 (v0.9.0 purpose guard, warmup/cooldown quality, Intervals.icu upload ready)
-**Status:** Specification v2.10 · Engine v0.9.0 · 224 tests passing
+**Restore point date:** 2026-10-09 (v0.10.0 rider level as a design criterion)
+**Status:** Specification v2.10 · Engine v0.10.0 · 232 tests passing
 
 This CHANGELOG carries forward the full history of the original
 `cycling-workout-engine` (Claude reasoning layer) up to v0.3.0/spec v2.4,
@@ -13,6 +13,31 @@ record, not a description of this repo's current behavior. See `README.md`
 for the current (Gemini) architecture.
 
 ---
+
+## v0.10.0 — Rider level: how the work is cut (2026-10-09)
+
+### Why
+The tempo the engine produced for "tempo de 45 minutos" was a good session
+for an experienced rider and a hard one for a beginner. A tempo is a tempo:
+the zone, the amount of work and its intensity do not change with the rider.
+What changes is how the work is cut into blocks.
+
+### What changed
+- A request can carry a level: `basic`, `intermediate` or `advanced`, said in
+  plain words ("tempo de 45 minutos nivel básico", "para principiante",
+  "advanced"). Nothing is stored anywhere; without a level the session is
+  designed as before.
+- The level reaches Gemini as a **design criterion, not a rule**: the lower
+  the level, the more the work is cut into shorter blocks with easy
+  recoveries between them (variations stay, with room to breathe); the higher,
+  the more continuous. Total time still governs and the requested zone still
+  carries the session. The prompt gives one illustration (40 min of tempo as
+  40 continuous / 2 x 20 / 4 x 10 with ~3 min easy) and says plainly that it
+  is not numbers to follow.
+- **The engine validates nothing about the level.** No limits on block length,
+  recoveries or IF; the existing checks (70% purpose, warmup, cooldown,
+  duration) are unchanged. The system prompt carries no level rules.
+- 8 new tests (232).
 
 ## v0.9.0 — Freedom with a purpose; warmups and cooldowns that make sense (2026-10-09)
 

@@ -109,6 +109,40 @@ def build_system_prompt() -> str:
     )
 
 
+LEVELS = ("basic", "intermediate", "advanced")
+
+
+def level_lines(level: Optional[str]) -> list[str]:
+    """The rider's level as a DESIGN CRITERION (not a rule): the amount of
+    work in the requested zone and its intensity do not change; the level
+    decides how that work is cut into blocks. The engine checks nothing here."""
+    if level not in LEVELS:
+        return []
+    how = {
+        "basic": "Cut the work into shorter blocks with easy recoveries "
+                 "between them, and keep any variation inside the session "
+                 "but give it room to breathe (for example an extra easy "
+                 "step inside a repeat). Build the warmup gradually.",
+        "intermediate": "Cut the work into fewer, longer blocks with shorter "
+                        "recoveries, between the basic and the advanced "
+                        "approach.",
+        "advanced": "Let the work run in long, continuous blocks with little "
+                    "or no recovery; variations and surges are welcome when "
+                    "they serve the purpose.",
+    }[level]
+    return [
+        f"Rider level: {level}. This is a design criterion, not a rule. The "
+        "total time still governs, the requested zone still carries the "
+        "session and the intensity of the work does not change with the "
+        "level; the level decides how the work is CUT into blocks and how "
+        "much easy recovery is placed around it. " + how,
+        "Illustration only, not numbers to follow: for 40 min of tempo an "
+        "advanced rider may ride 40 min continuously, an intermediate 2 x 20 "
+        "min, a basic 4 x 10 min with about 3 min easy between. Reason from "
+        "the zone, the duration and the session you are designing.",
+    ]
+
+
 def build_user_prompt(*, mode: str, zone: str,
                       target_duration_seconds: Optional[int],
                       target_tss: Optional[float],
@@ -116,7 +150,8 @@ def build_user_prompt(*, mode: str, zone: str,
                       recent: list[CatalogEntry],
                       rejection_feedback: Optional[str] = None,
                       warmup_seconds: Optional[int] = None,
-                      cooldown_seconds: Optional[int] = None) -> str:
+                      cooldown_seconds: Optional[int] = None,
+                      level: Optional[str] = None) -> str:
     lines = [
         f"Mode: {mode}",
         f"Requested zone (the purpose of the session): {zone}",
@@ -136,6 +171,7 @@ def build_user_prompt(*, mode: str, zone: str,
                      "width and the internal ratios between work steps, not "
                      "the final absolute level.")
     lines += _fixed_sections_lines(warmup_seconds, cooldown_seconds)
+    lines += level_lines(level)
     if mode == "hr":
         lines.append("HR mode: write the warmup as climbing steps (no ramps), "
                      "and the cooldown as steps. Heart rate lags a changing "
@@ -259,7 +295,8 @@ def request_proposal(*, transport: Transport, mode: str, zone: str,
                      use_web_search: bool = False,
                      rejection_feedback: Optional[str] = None,
                      warmup_seconds: Optional[int] = None,
-                     cooldown_seconds: Optional[int] = None) -> dict:
+                     cooldown_seconds: Optional[int] = None,
+                     level: Optional[str] = None) -> dict:
 
     system = build_system_prompt()
     user = build_user_prompt(
@@ -269,6 +306,7 @@ def request_proposal(*, transport: Transport, mode: str, zone: str,
         recent=recent or [],
         rejection_feedback=rejection_feedback,
         warmup_seconds=warmup_seconds, cooldown_seconds=cooldown_seconds,
+        level=level,
     )
     return transport(system, user, [PROPOSAL_TOOL_SCHEMA], use_web_search)
 
@@ -280,7 +318,8 @@ def request_progression(*, transport: Transport, mode: str, zone: str,
                         use_web_search: bool = False,
                         rejection_feedback: Optional[str] = None,
                         warmup_seconds: Optional[int] = None,
-                        cooldown_seconds: Optional[int] = None) -> dict:
+                        cooldown_seconds: Optional[int] = None,
+                        level: Optional[str] = None) -> dict:
 
     from .progression import PROGRESSION_TOOL_SCHEMA
 
@@ -317,6 +356,7 @@ def request_progression(*, transport: Transport, mode: str, zone: str,
     if fixed:
         lines.append("In EVERY session of the progression:")
         lines += fixed
+    lines += level_lines(level)
     block = shapes.prompt_block(mode, zone)
     if block:
         lines += ["", block]

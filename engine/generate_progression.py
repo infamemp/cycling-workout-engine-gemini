@@ -72,6 +72,7 @@ def generate_progression(req: GenerationRequest, *,
             rejection_feedback=last_error,  # A4: correct, don't guess blind
             warmup_seconds=req.warmup_seconds,
             cooldown_seconds=req.cooldown_seconds,
+            level=req.level,
         )
         try:
             # Sub-repeats are unrolled into their blocks (the platform has
