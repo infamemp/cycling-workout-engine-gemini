@@ -195,6 +195,44 @@ def _check_step(mode: str, step: dict, valid_zones: set[str], dominant: str) -> 
         )
 
 
+# Unknown fields (v0.4.1). Gemini's response_schema does not carry
+# `additionalProperties: false`, so the API itself would let a field the
+# engine does not know through. The engine checks it here instead: a field
+# outside the schema means the model misread the contract, and silently
+# ignoring it could drop something the model meant (e.g. a misspelled
+# "cooldown_secs" would otherwise fall back to the default cooldown).
+_TOP_KEYS = set(PROPOSAL_TOOL_SCHEMA["input_schema"]["properties"])
+_ELEMENT_KEYS = set(PROPOSAL_TOOL_SCHEMA["input_schema"]["properties"]
+                    ["main_set"]["items"]["properties"])
+_INNER_STEP_KEYS = set(PROPOSAL_TOOL_SCHEMA["input_schema"]["properties"]
+                       ["main_set"]["items"]["properties"]["steps"]["items"]
+                       ["properties"])
+
+
+def _check_unknown_fields(proposal: dict) -> None:
+    extra = set(proposal) - _TOP_KEYS
+    if extra:
+        raise ProposalRejected(
+            f"unknown proposal field(s) {sorted(extra)} — use only the "
+            f"fields of the schema")
+    for i, el in enumerate(proposal.get("main_set") or []):
+        if not isinstance(el, dict):
+            raise ProposalRejected(f"main_set element {i} is not an object")
+        extra = set(el) - _ELEMENT_KEYS
+        if extra:
+            raise ProposalRejected(
+                f"unknown field(s) {sorted(extra)} in main_set element {i}")
+        for j, st in enumerate(el.get("steps") or []):
+            # An inner item carrying "element" is a nested repeat: leave it
+            # to the nested-repeat check, which names the real problem.
+            if isinstance(st, dict) and "element" not in st:
+                extra = set(st) - _INNER_STEP_KEYS
+                if extra:
+                    raise ProposalRejected(
+                        f"unknown field(s) {sorted(extra)} in step {j} of "
+                        f"main_set element {i}")
+
+
 def _check_hr_staircase(stair: list) -> None:
     """Sanity-check an HR warmup staircase (spec 11: ascending steps, never a
     ramp, never stepping down). This was previously never validated at all —
@@ -272,6 +310,8 @@ def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
     valid = _zone_names(mode)
     if dominant_zone not in valid:
         raise ProposalRejected(f"dominant zone {dominant_zone!r} invalid for {mode}")
+
+    _check_unknown_fields(proposal)
 
     if not proposal.get("main_set"):
         raise ProposalRejected("main_set is empty")

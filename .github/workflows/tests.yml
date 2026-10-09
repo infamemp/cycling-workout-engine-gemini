@@ -1,0 +1,23 @@
+# Runs the test suite on every push and pull request (v0.4.1).
+# A red cross next to a commit on GitHub means a test failed: read the log of
+# the "tests" run before building on that commit. No API key is needed — the
+# tests use a mock transport.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Tests
+        run: python -m pytest -q

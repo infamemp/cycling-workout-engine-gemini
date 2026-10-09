@@ -18,28 +18,16 @@ Web search architecture (two-call pattern):
        regardless of what either call produced.
 """
 from __future__ import annotations
-import json
-import os
 from typing import Callable, Optional
 
 from .proposal import PROPOSAL_TOOL_SCHEMA
 from .catalog import CatalogEntry
+from .llm_config import (MODEL, THINKING_RESEARCH, THINKING_STRUCTURE,
+                         thinking_config, parse_json_text)
 
 Transport = Callable[[str, str, list, bool], dict]
 
-# Both the research call and the structure call use the same model (chosen
-# 2026-07: gemini-3.1-pro-preview — flagship reasoning tier, no announced
-# shutdown date at time of writing). NOTE: despite the "3.1 Pro" marketing
-# name, the Developer API's generateContent still exposes it under the
-# "-preview" model ID — this is Google's current naming, not a typo. Preview
-# models can change or have tighter rate limits than GA ones; if that
-# matters for your usage, re-check https://ai.google.dev/gemini-api/docs/models
-# for a GA equivalent before relying on this in unattended/production use.
-# Also check https://ai.google.dev/gemini-api/docs/deprecations before
-# assuming any hardcoded model string still works — Google's retirement
-# cadence has been fast (whole 1.0/1.5 generations and the 2.0 Flash line
-# are already gone as of mid-2026).
-MODEL = os.getenv("WORKOUT_ENGINE_MODEL", "gemini-3.1-pro-preview")
+# Model, thinking levels and the no-temperature rule live in llm_config.py.
 
 
 def build_system_prompt() -> str:
@@ -132,7 +120,7 @@ def gemini_transport(api_key: Optional[str] = None) -> Transport:
         config = types.GenerateContentConfig(
             system_instruction=system_prompt,
             tools=[types.Tool(google_search=types.GoogleSearch())],
-            temperature=0.5,
+            thinking_config=thinking_config(THINKING_RESEARCH),
         )
         response = client.models.generate_content(
             model=MODEL,
@@ -170,7 +158,7 @@ def gemini_transport(api_key: Optional[str] = None) -> Transport:
             system_instruction=full_system,
             response_mime_type="application/json",
             response_schema=target_schema,
-            temperature=0.4,
+            thinking_config=thinking_config(THINKING_STRUCTURE),
         )
 
         response = client.models.generate_content(
@@ -179,13 +167,7 @@ def gemini_transport(api_key: Optional[str] = None) -> Transport:
             config=config,
         )
 
-        raw_text = (response.text or "").strip()
-        if raw_text.startswith("```json"):
-            raw_text = raw_text[7:-3].strip()
-        elif raw_text.startswith("```"):
-            raw_text = raw_text[3:-3].strip()
-
-        return json.loads(raw_text)
+        return parse_json_text(response.text)
 
     return _transport
 

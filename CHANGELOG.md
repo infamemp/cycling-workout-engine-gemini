@@ -1,8 +1,8 @@
 # Cycling Workout Generator — CHANGELOG & Restore Point
 ## (Gemini fork: `cycling-workout-engine-gemini`)
 
-**Restore point date:** 2026-07-04 (Gemini reasoning-layer migration + audit)
-**Status:** Specification v2.5 · Engine v0.4.0 · 115 tests passing
+**Restore point date:** 2026-10-08 (v0.4.1 cleanup)
+**Status:** Specification v2.5 · Engine v0.4.1 · 94 tests passing
 
 This CHANGELOG carries forward the full history of the original
 `cycling-workout-engine` (Claude reasoning layer) up to v0.3.0/spec v2.4,
@@ -11,6 +11,57 @@ then continues independently from here for this fork. Entries before
 architecture accurately as of when they were written — they are historical
 record, not a description of this repo's current behavior. See `README.md`
 for the current (Gemini) architecture.
+
+---
+
+## v0.4.1 — Cleanup, current model, single surviving engine (2026-10-08)
+
+This repository is now the only workout engine. The Claude-based
+`cycling-workout-engine` is archived: everything it had is here, plus the
+HR-staircase content check it never received. The engine stays independent
+of Infame Elite Endurance Coach — anything taken from Infame is copied in,
+never read from that repository at run time.
+
+### Model
+- **Default model: `gemini-3.8-flash`** (newest on the API, stable, Sept
+  2026). The Pro tier is still `gemini-3.1-pro-preview` (older, preview).
+  All model settings moved to one module, `engine/llm_config.py`; the model
+  and the thinking level of each call can be overridden with environment
+  variables.
+- **Temperature removed everywhere.** The research, structure and parser
+  calls set 0.5, 0.4 and 0.0. Google documents that Gemini 3 models can
+  loop or degrade below the default of 1.0. A test now fails if any module
+  sets a temperature.
+- **Thinking levels set explicitly:** research `medium`, structure `high`,
+  parser `low`.
+- The two-call research/structure pattern stays. Gemini 3 now accepts
+  structured output together with Google Search; merging the calls is a
+  possible saving once tested against the live API.
+
+### Corrections to the v0.4.0 record
+- v0.4.0 reported 115 tests and 8 new HR-staircase tests. The repository
+  had 77 tests and none of those 8. They are written now
+  (`tests/test_cleanup_v041.py`), together with the other new tests:
+  94 in total.
+- `test_hr_staircase_schema.py`, a one-off script at the root that called
+  the live API, made a plain `pytest` run fail at collection without
+  `google-genai`. Removed: its question (does Gemini accept the
+  array-of-arrays shape) is answered by the engine running in use.
+
+### New checks
+- **Unknown proposal fields are rejected.** The API schema cannot carry
+  `additionalProperties: false`, so a misspelled field (e.g.
+  `cooldown_secs`) was silently ignored and the default used instead.
+- JSON answers are parsed in one place (`llm_config.parse_json_text`), with
+  a clear error on an empty answer instead of a bare `JSONDecodeError`.
+
+### Repository
+- `requirements.txt` added (`google-genai>=2.29`, `pytest`, `jsonschema`).
+- GitHub Actions runs the tests on every push
+  (`.github/workflows/tests.yml`).
+- `docs/SETUP.md` rewritten for Gemini (it still described the Anthropic
+  key and 48 tests). README and SETUP no longer point to a `workout_engine/`
+  folder that does not exist: everything runs from the repository root.
 
 ---
 

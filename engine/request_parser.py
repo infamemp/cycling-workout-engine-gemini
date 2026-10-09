@@ -3,8 +3,6 @@ request_parser.py — Natural-language request interpretation.
 Mapped to Gemini via google.genai
 """
 from __future__ import annotations
-import json
-import os
 from typing import Callable, Optional
 
 PARSE_TOOL_SCHEMA = {
@@ -66,10 +64,8 @@ PARSE_TOOL_SCHEMA = {
     },
 }
 
-# Same model/override policy as gemini_client.py — see that module's comment
-# for the note on checking Google's deprecation page before relying on any
-# hardcoded model string.
-MODEL = os.getenv("WORKOUT_ENGINE_MODEL", "gemini-3.1-pro-preview")
+# Model, thinking level and the no-temperature rule live in llm_config.py.
+from .llm_config import MODEL, THINKING_PARSER, thinking_config, parse_json_text  # noqa: E402
 
 def parse_request(*, transport: Callable, text: str) -> dict:
     system = (
@@ -107,21 +103,15 @@ def parse_transport_from_gemini(api_key: Optional[str] = None) -> Callable:
             system_instruction=full_system,
             response_mime_type="application/json",
             response_schema=target_schema,
-            temperature=0.0,
+            thinking_config=thinking_config(THINKING_PARSER),
         )
-        
+
         response = client.models.generate_content(
             model=MODEL,
             contents=user_prompt,
             config=config,
         )
-        
-        raw_text = response.text.strip()
-        if raw_text.startswith("```json"):
-            raw_text = raw_text[7:-3].strip()
-        elif raw_text.startswith("```"):
-            raw_text = raw_text[3:-3].strip()
-            
-        return json.loads(raw_text)
+
+        return parse_json_text(response.text)
 
     return _t

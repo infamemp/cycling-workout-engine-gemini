@@ -4,7 +4,7 @@ An intelligent, local Python engine that generates indoor cycling workouts —
 single sessions and multi-session progressions — as ready-to-import
 [intervals.icu](https://intervals.icu) workout files (`.md`).
 
-**Version:** 0.4.0
+**Version:** 0.4.1
 **Status:** Core engine functional — no web/app frontend yet (CLI only)
 **License:** Private / All rights reserved (no open-source license applied)
 
@@ -78,64 +78,61 @@ and **physiologically/mechanically correct**.
 
 ## Gemini web search architecture (two-call pattern)
 
-Gemini's structured output (`response_schema`) and the `google_search`
-grounding tool cannot be combined in a single `generate_content` call on the
-current API generation — confirmed as `400 INVALID_ARGUMENT`. Since search
-here exists to widen variety/creativity/effectiveness (see above), not to
-fetch facts, every generation runs it as two calls instead of dropping it:
+Every generation runs two calls:
 
 1. **Research call** — `google_search` enabled, no schema, free-form prose
    output: real structural approaches and methodological perspectives
    relevant to the exact request.
 2. **Structure call** — `response_schema` enabled, no tools: the research
    notes are folded into the prompt as context, and the model returns the
-   validated JSON proposal.
+   JSON proposal that Python validates.
 
-Both calls use the same model (`WORKOUT_ENGINE_MODEL`, default
-`gemini-3.1-pro-preview`). This is always active — there is currently no flag
-to disable it, since the project's use of web search is explicitly about
-generation quality, not an optional fact-check step.
+When this fork was created, Gemini rejected structured output and Google
+Search in the same request (`400 INVALID_ARGUMENT`). Gemini 3 models now
+allow the combination. The engine keeps the two calls because they work on
+any model and are proven; merging them into one call is a possible future
+saving, to be done only after testing it against the live API.
 
 ## Model configuration
 
-```bash
-# .env or shell environment
-WORKOUT_ENGINE_MODEL=gemini-3.1-pro-preview   # default if unset
-```
+All model settings live in `engine/llm_config.py`.
 
-A few things worth knowing before changing this:
-- Despite the "Gemini 3.1 Pro" marketing name, the Developer API's
-  `generateContent` currently exposes it under the `-preview` model ID —
-  that's Google's naming, not a typo or an unfinished migration.
-- Google's model retirement cadence on this API has been fast: entire
-  generations (1.0, 1.5, and the 2.0 Flash line) were shut down within the
-  life of this project. **Before assuming any hardcoded model string still
-  works, check** https://ai.google.dev/gemini-api/docs/deprecations. This
-  project already hit this bug once (see `CHANGELOG.md`, v0.4.0 — G1); it
-  will happen again if this file is never revisited.
-- A cheaper/faster alternative (e.g. `gemini-3-flash` or `gemini-3.5-flash`)
-  can be set via the same environment variable if cost matters more than
-  reasoning quality for your usage pattern.
+| Setting | Default | Override (environment variable) |
+| --- | --- | --- |
+| Model | `gemini-3.8-flash` | `WORKOUT_ENGINE_MODEL` |
+| Thinking, research call | `medium` | `WORKOUT_ENGINE_THINKING_RESEARCH` |
+| Thinking, structure call | `high` | `WORKOUT_ENGINE_THINKING_STRUCTURE` |
+| Thinking, request parser | `low` | `WORKOUT_ENGINE_THINKING_PARSER` |
+
+- `gemini-3.8-flash` is the newest model on the Gemini API (stable,
+  September 2026). The Pro tier is still `gemini-3.1-pro-preview`, an older
+  preview model; set it through `WORKOUT_ENGINE_MODEL` to compare.
+- **No temperature is ever set.** Google documents that Gemini 3 models can
+  loop or degrade when the temperature is set below its default of 1.0. A
+  test fails if any module sets one.
+- Google retires models quickly (1.0, 1.5 and the 2.0 Flash line are gone).
+  Before trusting a model id, check
+  https://ai.google.dev/gemini-api/docs/deprecations.
 
 ## Requirements
 
 - Python 3.10+ (tested on 3.14)
-- [`google-genai`](https://pypi.org/project/google-genai/) Python SDK
+- [`google-genai`](https://pypi.org/project/google-genai/) Python SDK, 2.29 or newer
 - A Gemini API key (`GEMINI_API_KEY` or `GOOGLE_API_KEY` environment variable)
   from [Google AI Studio](https://aistudio.google.com)
 - `pytest`, `jsonschema` (dev/testing only)
 
 ```bash
-pip install google-genai pytest jsonschema
+pip install -r requirements.txt
 ```
 
 ## Quick start
 
 ```bash
-cd workout_engine
+# From the repository root (the folder that contains pedir.py)
 
 # Run the test suite (no API key needed — uses a mock transport)
-python -m pytest tests/ -q
+python -m pytest -q
 
 # Generate a workout in plain language (requires GEMINI_API_KEY)
 python pedir.py "tempo de 50 minutos"
@@ -192,7 +189,7 @@ Project history and every locked design decision: [`CHANGELOG.md`](CHANGELOG.md)
 ## Project layout
 
 ```
-workout_engine/
+cycling-workout-engine-gemini/
 ├── pedir.py                  # natural-language front-end command
 ├── engine/
 │   ├── zones.py              # Friel power/HR zones (fixed data)
@@ -204,6 +201,7 @@ workout_engine/
 │   ├── structure.py          # mandatory session structure
 │   ├── assembler.py          # final .md assembly + real TSS
 │   ├── proposal.py           # Gemini↔Python contract + hard-rule validator
+│   ├── llm_config.py         # model, thinking levels, JSON parsing (one place)
 │   ├── gemini_client.py      # Gemini API calls (response_schema + web search)
 │   ├── build_from_proposal.py
 │   ├── resolve_intensity.py  # deterministic work-intensity solver (power mode)
@@ -215,22 +213,23 @@ workout_engine/
 │   └── cli.py                # command-line interface (--offline mode)
 └── tests/
     ├── test_core.py          # deterministic-core tests (incl. hand-verified TSS)
-    └── test_phase2.py        # reasoning-layer integration tests via mock transport
+    ├── test_phase2.py        # reasoning-layer integration tests via mock transport
+    └── test_cleanup_v041.py  # HR staircase content, unknown fields, model settings
 ```
 
 ## Testing
 
 ```bash
-python -m pytest tests/ -q
+python -m pytest -q
 ```
 
-115 tests, all passing without any API key (a mock transport stands in for
-the real Gemini API — the tests exercise the `Transport` interface directly,
-so they are provider-agnostic and required no changes for this fork).
-Coverage includes hand-calculated TSS/IF reference cases, RPE derivation,
-output-syntax validation, end-to-end generation for both power and
-heart-rate modes, budget-conservation enforcement, TSS-target verification,
-and HR-staircase content validation (ascending order, bounds, types).
+94 tests, all passing without any API key (a mock transport stands in for
+the real Gemini API). GitHub Actions runs them on every push
+(`.github/workflows/tests.yml`). Coverage includes hand-calculated TSS/IF
+reference cases, RPE derivation, output-syntax validation, end-to-end
+generation for both power and heart-rate modes, budget-conservation
+enforcement, TSS-target verification, HR-staircase content validation,
+unknown-field rejection, and the model settings.
 
 ## Status & roadmap
 
