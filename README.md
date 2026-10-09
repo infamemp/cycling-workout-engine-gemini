@@ -4,7 +4,7 @@ An intelligent, local Python engine that generates indoor cycling workouts —
 single sessions and multi-session progressions — as ready-to-import
 [intervals.icu](https://intervals.icu) workout files (`.md`).
 
-**Version:** 0.5.0
+**Version:** 0.6.0
 **Status:** Core engine functional — no web/app frontend yet (CLI only)
 **License:** Private / All rights reserved (no open-source license applied)
 
@@ -58,7 +58,7 @@ and **physiologically/mechanically correct**.
   *structure*. The deterministic core validates every proposal against hard
   rules (zone bounds, no cross-mode mixing, no nested repeats,
   dominant-stimulus rule, time-budget conservation, TSS-target verification,
-  HR-staircase content sanity) before accepting it. A rejected proposal is
+  warmup/cooldown sanity) before accepting it. A rejected proposal is
   discarded and re-requested — never silently "fixed," never accepted blind.
 - **Web search is for variety, not fact-grounding.** The engine already knows
   exercise physiology; live search exists to surface structural approaches
@@ -72,7 +72,7 @@ and **physiologically/mechanically correct**.
   rate) in literal, validated [intervals.icu syntax](https://intervals.icu) —
   never absolute watts/bpm, never narrative prose.
 - **Time budget is arithmetic, not creative.** Whether a full session (warmup +
-  prep + main set + cooldown) fits the athlete's stated time budget is
+  main set + cooldown) fits the athlete's stated time budget is
   enforced by exact math. *How* that budget is spent (warmup length, main-set
   structure, intensity) is the engine's reasoned creativity.
 
@@ -113,6 +113,14 @@ All model settings live in `engine/llm_config.py`.
 - Google retires models quickly (1.0, 1.5 and the 2.0 Flash line are gone).
   Before trusting a model id, check
   https://ai.google.dev/gemini-api/docs/deprecations.
+
+## Warmup and cooldown
+
+Designed for each session, never a template: brief (~5 min warmup, 2–3 min
+cooldown) in short sessions, longer as duration and intensity grow, with
+short openers before hard work when they help. Ask for a length in your
+request ("con calentamiento de 15 minutos") and the engine uses exactly that.
+Heart-rate sessions warm up in climbing steps (heart rate lags a ramp).
 
 ## Training load (TSS)
 
@@ -187,11 +195,11 @@ Natural-language request ("tempo de 50 minutos")
         │                          zone bounds, no cross-mode mixing, no
         │                          nested repeats, dominant-stimulus rule,
         │                          time-budget conservation, TSS-target check,
-        │                          HR-staircase content sanity
+        │                          warmup/cooldown sanity (sections.py)
         │                          (rejects & retries on any violation)
         │
-        ├──► structure.py      ── mandatory session structure (warmup/prep/
-        │                          cooldown; ramps for power, staircases for HR)
+        ├──► sections.py       ── warmup and cooldown, designed per session;
+        │                          a requested length adopted exactly
         │
         ├──► tss.py            ── NP (30 s rolling) / HRSS load, as Intervals.icu
         │
@@ -220,9 +228,10 @@ cycling-workout-engine-gemini/
 │   ├── render.py             # intervals.icu syntax + output-validation gate
 │   ├── tss.py                # NP (30 s rolling), HRSS, TSS algebra, solver
 │   ├── athlete_settings.py   # reads athlete.yaml (your thresholds)
+│   ├── sections.py           # warmup / cooldown: schema, checks, building
 │   ├── catalog.py            # SQLite memory + library
 │   ├── models.py             # request/session dataclasses
-│   ├── structure.py          # mandatory session structure
+│   ├── structure.py          # conflict detection, offline placeholder main set
 │   ├── assembler.py          # final .md assembly + real TSS
 │   ├── proposal.py           # Gemini↔Python contract + hard-rule validator
 │   ├── llm_config.py         # model, thinking levels, JSON parsing (one place)
@@ -239,7 +248,8 @@ cycling-workout-engine-gemini/
     ├── test_core.py          # deterministic-core tests (incl. hand-verified TSS)
     ├── test_phase2.py        # reasoning-layer integration tests via mock transport
     ├── test_cleanup_v041.py  # HR staircase content, unknown fields, model settings
-    └── test_load_v050.py     # load methods, athlete.yaml
+    ├── test_load_v050.py     # load methods, athlete.yaml
+    └── test_sections_v060.py # designed warmup/cooldown, offline durations
 ```
 
 ## Testing
@@ -248,12 +258,12 @@ cycling-workout-engine-gemini/
 python -m pytest -q
 ```
 
-112 tests, all passing without any API key (a mock transport stands in for
+138 tests, all passing without any API key (a mock transport stands in for
 the real Gemini API). GitHub Actions runs them on every push
 (`.github/workflows/tests.yml`). Coverage includes hand-calculated TSS/IF
 reference cases (NP with the rolling window, HRSS), RPE derivation, output-syntax validation, end-to-end
 generation for both power and heart-rate modes, budget-conservation
-enforcement, TSS-target verification, HR-staircase content validation,
+enforcement, TSS-target verification, warmup/cooldown checks,
 unknown-field rejection, and the model settings.
 
 ## Status & roadmap
@@ -264,7 +274,7 @@ unknown-field rejection, and the model settings.
   reasoned (live-researched) ceiling
 - Natural-language request parsing (no need to know internal zone names)
 - Full validation pipeline: zone bounds, budget conservation, TSS-target
-  verification, dominant/subordinate stimulus rule, HR-staircase content
+  verification, dominant/subordinate stimulus rule, warmup/cooldown
   sanity, output-syntax gate
 
 **Not yet built:**

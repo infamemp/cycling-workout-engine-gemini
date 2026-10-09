@@ -60,6 +60,10 @@ TRIMP_B = 1.92
 TYPICAL_MAX_HR_RATIO = 1.09      # max HR / LTHR
 TYPICAL_REST_HR_RATIO = 0.37     # resting HR / LTHR
 TYPICAL_LTHR_BPM = 160
+# Intervals.icu's resting HR when the athlete has none: with 60 bpm the
+# formula reproduced both planned HR workouts of an athlete with no resting
+# HR on record (17 vs 18 and 124 vs 125 TSS), checked 2026-10-08.
+DEFAULT_RESTING_HR_BPM = 60
 
 
 @dataclass(frozen=True)

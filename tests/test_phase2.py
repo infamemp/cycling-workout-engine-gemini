@@ -16,6 +16,34 @@ from engine.generator_v2 import generate_single_v2
 from engine.proposal import validate_proposal, ProposalRejected
 
 
+# --- Warmup / cooldown helpers (v0.6.0: designed per session) ----------------
+# _W/_C rebuild the pre-v0.6 fixed structure (45-75% ramp + 45-55% block,
+# 75-45% ramp) so the numbers these tests were written against still hold.
+
+def _W(ramp_s=600, steady_s=0):
+    w = [{"element": "ramp", "duration_seconds": ramp_s,
+          "from_pct": 45, "to_pct": 75}]
+    if steady_s:
+        w.append({"element": "step", "duration_seconds": steady_s,
+                  "low_pct": 45, "high_pct": 55})
+    return w
+
+
+def _C(seconds=300):
+    return [{"element": "ramp", "duration_seconds": seconds,
+             "from_pct": 75, "to_pct": 45}]
+
+
+def _WHR(stair):
+    return [{"element": "step", "duration_seconds": sec,
+             "low_pct": lo, "high_pct": hi} for lo, hi, sec in stair]
+
+
+def _CHR(seconds=300):
+    return [{"element": "step", "duration_seconds": seconds,
+             "low_pct": 60, "high_pct": 70}]
+
+
 # --- Mock transports --------------------------------------------------------
 
 def mock_power_tempo(*_args, **_kw):
@@ -23,6 +51,7 @@ def mock_power_tempo(*_args, **_kw):
     (subordinate), classic interval."""
     return {
         "structural_pattern": "classic_interval",
+        "warmup": _W(600, 120), "cooldown": _C(300),
         "summary": "Tempo 4x10min with short subordinate VO2 surges",
         "complementary_stimuli": [{"zone": "VO2Max",
                                    "rationale": "short surges enrich the tempo block"}],
@@ -44,7 +73,7 @@ def mock_hr_tempo(*_args, **_kw):
     return {
         "structural_pattern": "classic_interval",
         "summary": "HR Tempo 3x8min",
-        "hr_warmup_staircase": [[50, 60, 120], [60, 70, 120], [70, 80, 120]],
+        "warmup": _WHR([[50, 60, 120], [60, 70, 120], [70, 80, 120]]), "cooldown": _CHR(300),
         "main_set": [
             {"element": "repeat", "repeats": 3, "steps": [
                 {"duration_seconds": 480, "low_pct": 90, "high_pct": 93,
@@ -60,6 +89,7 @@ def mock_complementary_dominates(*_args, **_kw):
     """INVALID: complementary VO2 work exceeds dominant Tempo work."""
     return {
         "structural_pattern": "classic_interval",
+        "warmup": _W(600, 120), "cooldown": _C(300),
         "summary": "bad: VO2 dominates",
         "main_set": [
             {"element": "step", "duration_seconds": 120, "low_pct": 80,
@@ -74,6 +104,7 @@ def mock_cross_mode_zone(*_args, **_kw):
     """INVALID for power mode: uses an HR-only zone name."""
     return {
         "structural_pattern": "continuous",
+        "warmup": _W(600, 120), "cooldown": _C(300),
         "summary": "bad: HR zone in power mode",
         "main_set": [
             {"element": "step", "duration_seconds": 600, "low_pct": 94,
@@ -86,6 +117,7 @@ def mock_nested_repeat(*_args, **_kw):
     """INVALID: a repeat nested inside a repeat step."""
     return {
         "structural_pattern": "divided_split",
+        "warmup": _W(600, 120), "cooldown": _C(300),
         "summary": "bad: nested",
         "main_set": [
             {"element": "repeat", "repeats": 2, "steps": [
@@ -120,7 +152,9 @@ def test_hr_proposal_uses_staircase_and_lthr():
     assert "LTHR" in md and "% HR" not in md
     warmup_section = md.split("# Main Set")[0]
     assert "ramp" not in warmup_section      # staircase, not ramp
-    assert "2m 60-80% LTHR" in md            # fixed HR prep block
+    # v0.6.0: no fixed HR prep block — the warmup is the proposal's steps
+    assert "2m 60-80% LTHR" not in md
+    assert warmup_section.count("% LTHR") == 3
 
 
 def test_complementary_cannot_dominate():
@@ -188,11 +222,13 @@ if __name__ == "__main__":
 def _mock_tempo_progression(system, user, tools, web):
     def cont(minutes):
         return {"structural_pattern": "continuous",
+        "warmup": _W(600, 120), "cooldown": _C(300),
                 "summary": f"Tempo {minutes}min continuous",
                 "main_set": [{"element": "step", "duration_seconds": minutes*60,
                               "low_pct": 80, "high_pct": 88, "zone_name": "Tempo"}]}
     def interval(reps, minutes):
         return {"structural_pattern": "classic_interval",
+        "warmup": _W(600, 120), "cooldown": _C(300),
                 "summary": f"Tempo {reps}x{minutes}min",
                 "main_set": [{"element": "repeat", "repeats": reps, "steps": [
                     {"duration_seconds": minutes*60, "low_pct": 80, "high_pct": 88,
@@ -258,7 +294,7 @@ def test_progression_day1_oversized_warmup_rejected():
             "reasoning": "t", "graduation_note": None,
             "sessions": [{
                 "structural_pattern": "classic_interval", "summary": "bad",
-                "warmup_seconds": 600, "prep_seconds": 120, "cooldown_seconds": 300,
+                "warmup": _W(600, 120), "cooldown": _C(300),
                 "main_set": [{"element": "repeat", "repeats": 3, "steps": [
                     {"duration_seconds": 600, "low_pct": 80, "high_pct": 88,
                      "zone_name": "Tempo"}]}],
@@ -283,7 +319,7 @@ def test_progression_day1_fits_budget_exactly():
             "sessions": [{
                 "structural_pattern": "classic_interval",
                 "summary": "Tempo 2x10min in 30min budget",
-                "warmup_seconds": 300, "prep_seconds": 60, "cooldown_seconds": 120,
+                "warmup": _W(300, 60), "cooldown": _C(120),
                 "main_set": [{"element": "repeat", "repeats": 2, "steps": [
                     {"duration_seconds": 600, "low_pct": 80, "high_pct": 88,
                      "zone_name": "Tempo"},
@@ -311,7 +347,7 @@ def test_tss_target_far_off_is_rejected():
     def mock_way_off(system, user, tools, web):
         return {
             "structural_pattern": "continuous", "summary": "too easy",
-            "warmup_seconds": 300, "prep_seconds": 60, "cooldown_seconds": 120,
+            "warmup": _W(300, 60), "cooldown": _C(120),
             "main_set": [{"element": "step", "duration_seconds": 1200,
                           "low_pct": 56, "high_pct": 60, "zone_name": "Endurance"}],
         }
@@ -331,7 +367,7 @@ def test_tss_target_close_is_accepted():
     def mock_close(system, user, tools, web):
         return {
             "structural_pattern": "continuous", "summary": "tuned close",
-            "warmup_seconds": 300, "prep_seconds": 60, "cooldown_seconds": 120,
+            "warmup": _W(300, 60), "cooldown": _C(120),
             "main_set": [{"element": "step", "duration_seconds": 2520,
                           "low_pct": 68, "high_pct": 72, "zone_name": "Endurance"}],
         }
@@ -346,6 +382,7 @@ def test_undeclared_complementary_zone_rejected():
     from engine.proposal import validate_proposal, ProposalRejected
     bad = {
         "structural_pattern": "classic_interval", "summary": "undeclared",
+        "warmup": _W(600, 120), "cooldown": _C(300),
         "main_set": [{"element": "repeat", "repeats": 3, "steps": [
             {"duration_seconds": 540, "low_pct": 80, "high_pct": 88, "zone_name": "Tempo"},
             {"duration_seconds": 30, "low_pct": 108, "high_pct": 115, "zone_name": "VO2Max"},
@@ -368,7 +405,7 @@ def test_minor_budget_shortfall_is_allowed():
     # 58 min of a 60-min budget (real-world case, ~3.3% under) must pass.
     proposal = {
         "structural_pattern": "continuous", "summary": "minor shortfall ok",
-        "warmup_seconds": 600, "prep_seconds": 60, "cooldown_seconds": 300,
+        "warmup": _W(600, 60), "cooldown": _C(300),
         "main_set": [
             {"element": "step", "duration_seconds": 600, "low_pct": 56,
              "high_pct": 63, "zone_name": "Endurance"},
@@ -392,7 +429,7 @@ def test_considerable_budget_shortfall_is_rejected():
     # 35 min of a 60-min budget (~58%, well below the 80% floor) must reject.
     proposal = {
         "structural_pattern": "continuous", "summary": "way too short",
-        "warmup_seconds": 300, "prep_seconds": 60, "cooldown_seconds": 120,
+        "warmup": _W(300, 60), "cooldown": _C(120),
         "main_set": [{"element": "step", "duration_seconds": 1620,
                       "low_pct": 65, "high_pct": 70, "zone_name": "Endurance"}],
     }
@@ -419,6 +456,7 @@ def test_omitted_structure_durations_cannot_bypass_ceiling():
     def mock_omits(system, user, tools, web):
         return {
             "structural_pattern": "continuous", "summary": "omits durations",
+            "warmup": _W(600, 120), "cooldown": _C(300),
             "main_set": [{"element": "step", "duration_seconds": 1680,
                           "low_pct": 80, "high_pct": 88, "zone_name": "Tempo"}],
         }
@@ -441,7 +479,7 @@ def test_max_available_is_ceiling_only_no_floor():
         return {
             "structural_pattern": "classic_interval",
             "summary": "40min tempo under a 60min cap",
-            "warmup_seconds": 480, "prep_seconds": 120, "cooldown_seconds": 180,
+            "warmup": _W(480, 120), "cooldown": _C(180),
             "main_set": [{"element": "repeat", "repeats": 3, "steps": [
                 {"duration_seconds": 480, "low_pct": 80, "high_pct": 88,
                  "zone_name": "Tempo"},
@@ -463,7 +501,7 @@ def test_target_duration_floor_still_enforced():
     def mock_too_short(system, user, tools, web):
         return {
             "structural_pattern": "continuous", "summary": "way too short",
-            "warmup_seconds": 300, "prep_seconds": 60, "cooldown_seconds": 120,
+            "warmup": _W(300, 60), "cooldown": _C(120),
             "main_set": [{"element": "step", "duration_seconds": 1620,
                           "low_pct": 80, "high_pct": 88, "zone_name": "Tempo"}],
         }
@@ -477,31 +515,28 @@ def test_target_duration_floor_still_enforced():
 
 
 def test_hr_staircase_sum_governs_budget():
-    """M2 (budget side): a declared warmup_seconds that disagrees with the
-    staircase must not be what the budget check uses — the staircase sum is
-    what gets built, so it is what gets validated."""
+    """The budget counts the warmup that is actually built: a 4-step HR
+    staircase (480 s) + 900 s main + 300 s cooldown = 1680 s breaks a
+    1500 s budget."""
     from engine.models import GenerationRequest
     from engine.generator_v2 import generate_single_v2
     from engine.proposal import ProposalRejected
 
-    def mock_hr_mismatch(system, user, tools, web):
+    def mock_hr_long_warmup(system, user, tools, web):
         return {
             "structural_pattern": "continuous",
-            "summary": "claims 120s warmup, staircase is 480s",
-            "warmup_seconds": 120, "prep_seconds": 60, "cooldown_seconds": 120,
-            "hr_warmup_staircase": [[50, 60, 120], [60, 70, 120],
-                                    [70, 80, 120], [80, 88, 120]],  # 480s real
+            "summary": "staircase is 480s",
+            "warmup": _WHR([[50, 60, 120], [60, 70, 120],
+                            [70, 80, 120], [80, 88, 120]]),
+            "cooldown": _CHR(300),
             "main_set": [{"element": "step", "duration_seconds": 900,
                           "low_pct": 90, "high_pct": 93, "zone_name": "Tempo"}],
         }
-    # Budget 25 min: declared math (120+60+120+900=1200s) would pass; the
-    # REAL build (480+60+120+900=1560s) exceeds nothing here, so use a budget
-    # where the two disagree on the verdict: 1500s (25 min) -> real 1560 > 1500.
     req = GenerationRequest(kind="single_session", mode="hr",
                             requested_zone="Tempo", target_duration_seconds=1500)
     try:
-        generate_single_v2(req, transport=mock_hr_mismatch)
-        assert False, "expected rejection: real staircase blows the budget"
+        generate_single_v2(req, transport=mock_hr_long_warmup)
+        assert False, "expected rejection: the real staircase blows the budget"
     except ProposalRejected:
         pass
 
@@ -516,8 +551,7 @@ def test_progression_later_sessions_no_floor_vs_max():
         def sess(main_secs):
             return {"structural_pattern": "continuous",
                     "summary": f"tempo {main_secs}s",
-                    "warmup_seconds": 300, "prep_seconds": 60,
-                    "cooldown_seconds": 120,
+                    "warmup": _W(300, 60), "cooldown": _C(120),
                     "main_set": [{"element": "step",
                                   "duration_seconds": main_secs,
                                   "low_pct": 80, "high_pct": 88,
@@ -543,7 +577,7 @@ def _c3_structure_proposal():
     return {
         "structural_pattern": "classic_interval",
         "summary": "Tempo 3x10min, engine resolves intensity",
-        "warmup_seconds": 300, "prep_seconds": 120, "cooldown_seconds": 300,
+        "warmup": _W(300, 120), "cooldown": _C(300),
         "main_set": [{"element": "repeat", "repeats": 3, "steps": [
             {"duration_seconds": 600, "low_pct": 80, "high_pct": 88,
              "zone_name": "Tempo"},
@@ -623,6 +657,7 @@ def test_c3_ratio_preserved_multiple_work_steps():
     before, after = _c3_before_after()
     prop = {
         "structural_pattern": "progressive",
+        "warmup": _W(600, 120), "cooldown": _C(300),
         "summary": "two-level tempo",
         "main_set": [
             {"element": "step", "duration_seconds": 600, "low_pct": 77,
@@ -688,6 +723,7 @@ def test_a1_zone_spill_rejected():
     from engine.proposal import validate_proposal, ProposalRejected
     for lo, hi in ((75, 105), (60, 76), (74, 90)):
         bad = {"structural_pattern": "continuous", "summary": "spill",
+        "warmup": _W(600, 120), "cooldown": _C(300),
                "main_set": [{"element": "step", "duration_seconds": 1200,
                              "low_pct": lo, "high_pct": hi,
                              "zone_name": "Tempo"}]}
@@ -704,11 +740,13 @@ def test_a1_full_zone_range_accepted():
     checks its lower bound."""
     from engine.proposal import validate_proposal
     ok_tempo = {"structural_pattern": "continuous", "summary": "full zone",
+    "warmup": _W(600, 120), "cooldown": _C(300),
                 "main_set": [{"element": "step", "duration_seconds": 1200,
                               "low_pct": 75, "high_pct": 90,
                               "zone_name": "Tempo"}]}
     validate_proposal(ok_tempo, mode="power", dominant_zone="Tempo")
     ok_neuro = {"structural_pattern": "classic_interval", "summary": "sprints",
+    "warmup": _W(600, 120), "cooldown": _C(300),
                 "main_set": [{"element": "repeat", "repeats": 6, "steps": [
                     {"duration_seconds": 10, "low_pct": 150, "high_pct": 200,
                      "zone_name": "Neuromuscular"},
@@ -729,6 +767,7 @@ def test_m3_missing_fields_clean_rejection():
     for st in cases:
         try:
             validate_proposal({"structural_pattern": "continuous",
+            "warmup": _W(600, 120), "cooldown": _C(300),
                                "summary": "x", "main_set": [st]},
                               mode="power", dominant_zone="Tempo")
             assert False, f"expected rejection for {st}"
@@ -741,6 +780,7 @@ def test_m3_missing_fields_clean_rejection():
 def test_m3_missing_repeats_clean_rejection():
     from engine.proposal import validate_proposal, ProposalRejected
     bad = {"structural_pattern": "classic_interval", "summary": "no repeats",
+    "warmup": _W(600, 120), "cooldown": _C(300),
            "main_set": [{"element": "repeat", "steps": [
                {"duration_seconds": 600, "low_pct": 80, "high_pct": 88,
                 "zone_name": "Tempo"}]}]}
@@ -758,6 +798,7 @@ def test_m3_recovery_high_end_checked():
     be easy, not just its low end."""
     from engine.proposal import validate_proposal, ProposalRejected
     bad = {"structural_pattern": "classic_interval", "summary": "hard recovery",
+    "warmup": _W(600, 120), "cooldown": _C(300),
            "main_set": [{"element": "repeat", "repeats": 3, "steps": [
                {"duration_seconds": 600, "low_pct": 80, "high_pct": 88,
                 "zone_name": "Tempo"},
@@ -786,14 +827,12 @@ def test_a4_feedback_reaches_second_attempt():
         prompts.append(user)
         if len(prompts) == 1:  # first: zone-spill -> rejected (A1)
             return {"structural_pattern": "continuous", "summary": "bad",
-                    "warmup_seconds": 300, "prep_seconds": 60,
-                    "cooldown_seconds": 120,
+                    "warmup": _W(300, 60), "cooldown": _C(120),
                     "main_set": [{"element": "step", "duration_seconds": 1200,
                                   "low_pct": 75, "high_pct": 105,
                                   "zone_name": "Tempo"}]}
         return {"structural_pattern": "continuous", "summary": "fixed",
-                "warmup_seconds": 300, "prep_seconds": 60,
-                "cooldown_seconds": 120,
+                "warmup": _W(300, 60), "cooldown": _C(120),
                 "main_set": [{"element": "step", "duration_seconds": 1200,
                               "low_pct": 80, "high_pct": 88,
                               "zone_name": "Tempo"}]}
@@ -816,8 +855,7 @@ def test_a4_progression_feedback_reaches_retry():
     def transport(system, user, tools, web):
         prompts.append(user)
         good = {"structural_pattern": "continuous", "summary": "ok",
-                "warmup_seconds": 300, "prep_seconds": 60,
-                "cooldown_seconds": 120,
+                "warmup": _W(300, 60), "cooldown": _C(120),
                 "main_set": [{"element": "step", "duration_seconds": 1200,
                               "low_pct": 80, "high_pct": 88,
                               "zone_name": "Tempo"}]}
@@ -882,8 +920,7 @@ def test_m4_feasible_target_passes_to_generation():
 
     def mock(system, user, tools, web):
         return {"structural_pattern": "classic_interval", "summary": "ok",
-                "warmup_seconds": 300, "prep_seconds": 120,
-                "cooldown_seconds": 300,
+                "warmup": _W(300, 120), "cooldown": _C(300),
                 "main_set": [{"element": "repeat", "repeats": 3, "steps": [
                     {"duration_seconds": 600, "low_pct": 80, "high_pct": 88,
                      "zone_name": "Tempo"},

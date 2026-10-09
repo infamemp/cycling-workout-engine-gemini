@@ -279,8 +279,6 @@ def test_generate_single_power_endtoend():
     md = sess.markdown_output
     # mandatory structure present
     assert "# Warmup" in md and "# Main Set" in md and "# Cooldown" in md
-    # the one fixed block always present
-    assert "2m 45-55%" in md
     # power mode: no LTHR, no forbidden constructs
     assert "LTHR" not in md
     assert "mtr" not in md and "freeride" not in md
@@ -346,8 +344,8 @@ def test_hr_warmup_is_staircase_not_ramp():
     # HR warmup must NOT use 'ramp'
     warmup_section = md.split("# Main Set")[0]
     assert "ramp" not in warmup_section
-    # must contain the fixed HR prep block
-    assert "2m 60-80% LTHR" in md
+    # v0.6.0: no fixed prep block; the offline warmup climbs in steps
+    assert warmup_section.count("% LTHR") >= 2
 
 
 def test_hr_cooldown_single_block_no_ramp():
@@ -371,19 +369,10 @@ def test_power_warmup_still_uses_ramp():
         GenerationRequest(kind="single_session", mode="power", requested_zone="Tempo"),
         seed=1,
     )
-    assert "ramp 45-75%" in sess.markdown_output
-    assert "2m 45-55%" in sess.markdown_output  # power prep block unchanged
-
-
-def test_hr_staircase_respects_10min_limit():
-    from engine.structure import build_warmup_hr_staircase
-    # 6 steps x 2min = 12min > 10min limit -> must raise
-    steps = [(50, 60, 120)] * 6
-    try:
-        build_warmup_hr_staircase(steps)
-        assert False, "expected limit violation"
-    except ValueError:
-        pass
+    warmup_section = sess.markdown_output.split("# Main Set")[0]
+    assert "ramp" in warmup_section
+    # v0.6.0: the fixed 45-55% prep block is gone
+    assert "45-55%" not in warmup_section
 
 
 def test_catalog_records_hr_generation():
@@ -402,8 +391,7 @@ def test_catalog_records_hr_generation():
     assert cat.count() == 1
     entry = cat.recent(mode="hr", dominant_zone="Tempo")[0]
     # duration must equal the real built total (staircase + prep + main + cooldown)
-    warm = sess.warmup.prep.duration_seconds + sum(
-        s.duration_seconds for s in sess.warmup.steps)
+    warm = sum(s.duration_seconds for s in sess.warmup)
     main = sum(b.repeats * sum(s.duration_seconds for s in b.steps)
                for b in sess.main_set)
     cool = sum(s.duration_seconds for s in sess.cooldown)

@@ -52,6 +52,14 @@ PARSE_TOOL_SCHEMA = {
             "max_duration_minutes": {"type": "integer",
                                      "description": "Max session duration if "
                                      "the user gave an upper bound."},
+            "warmup_minutes": {"type": "integer",
+                               "description": "Only if the user asked for a "
+                               "specific warmup length ('calentamiento de 15 "
+                               "minutos', '10 min warm-up'); otherwise omit."},
+            "cooldown_minutes": {"type": "integer",
+                                 "description": "Only if the user asked for a "
+                                 "specific cooldown length ('enfriamiento de 5 "
+                                 "minutos'); otherwise omit."},
             "target_tss": {"type": "number"},
             "target_if": {"type": "number"},
             "interpretation_note": {

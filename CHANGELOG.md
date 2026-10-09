@@ -1,8 +1,8 @@
 # Cycling Workout Generator — CHANGELOG & Restore Point
 ## (Gemini fork: `cycling-workout-engine-gemini`)
 
-**Restore point date:** 2026-10-08 (v0.5.0 training load)
-**Status:** Specification v2.6 · Engine v0.5.0 · 112 tests passing
+**Restore point date:** 2026-10-08 (v0.6.0 designed warmup and cooldown)
+**Status:** Specification v2.7 · Engine v0.6.0 · 138 tests passing
 
 This CHANGELOG carries forward the full history of the original
 `cycling-workout-engine` (Claude reasoning layer) up to v0.3.0/spec v2.4,
@@ -11,6 +11,56 @@ then continues independently from here for this fork. Entries before
 architecture accurately as of when they were written — they are historical
 record, not a description of this repo's current behavior. See `README.md`
 for the current (Gemini) architecture.
+
+---
+
+## v0.6.0 — Warmup and cooldown designed per session (2026-10-08)
+
+### Why
+Every session had the same warmup — a 45-75% ramp plus a fixed 1-2 min
+block at 45-55% — and the same 75-45% cooldown ramp, whether it was a
+30-minute recovery spin or a two-hour VO2max session. The specification
+already said the engine reasons them; the code had them as constants.
+
+### What changed
+- **The reasoning layer designs the warmup and cooldown** for the session in
+  hand, in the same proposal as the main set, and gives the reason
+  (`warmup_cooldown_rationale`). Criteria in the prompt, not rules: brief in
+  short sessions (~5 min warmup, 2-3 min cooldown), longer as duration and
+  intensity grow, short openers before hard work when they help.
+- **Python checks sanity and arithmetic only** (`engine/sections.py`): a
+  warmup starts easy (≤ 65% FTP / 80% LTHR) and, in HR mode, climbs; a
+  cooldown stays at or below the Endurance top (75% / 89% LTHR) and ends
+  easy; ramps are power-mode only; sanity lengths 25 min warmup / 15 min
+  cooldown; the whole session within the time budget.
+- **A length the user asks for is used exactly.** "calentamiento de 15
+  minutos" → the parser fills `warmup_minutes`, the prompt states it, and a
+  proposal that misses it is rejected with the exact reason and retried. Same
+  for the cooldown. `engine.cli --warmup / --cooldown` do the same offline.
+- **The fixed prep block is gone**, in power and HR mode.
+- **Proposal schema:** `warmup` and `cooldown` are lists of `step`, `ramp`
+  (power only) and `repeat` elements; `warmup_seconds`, `prep_seconds`,
+  `cooldown_seconds` and `hr_warmup_staircase` are removed. The HR staircase
+  is now simply the HR warmup, with its climbing check kept.
+- **The intensity resolver** solves on the designed warmup and cooldown, so a
+  TSS/IF target accounts for exactly what is built.
+
+### Offline mode respects the duration
+`python -m engine.cli --duration 50` produced 57 minutes: the placeholder main
+set ignored the budget. It now uses 5/3 min sections up to 45-minute sessions
+(10/5 beyond, or the requested lengths) and fits the main set to the time
+left: 30, 45, 50, 60, 75 and 90 minutes all land within the budget (tested).
+
+### Resting HR default
+A missing resting HR now takes 60 bpm, Intervals.icu's own default: with 60
+the HRSS formula reproduced both planned HR workouts of an athlete with no
+resting HR on record (17 vs 18, 124 vs 125 TSS). The load is then reported as
+exact HRSS; the typical profile is used only without LTHR or max HR.
+
+### Other
+- Specification v2.7: Section 11 rewritten; `workout_engine_schema.json`
+  updated to match.
+- Tests: 112 → 138.
 
 ---
 

@@ -24,6 +24,7 @@ python pedir.py "tempo de 50 minutos"
 python pedir.py "vo2 max de 45 minutos"
 python pedir.py "umbral de 40 minutos por frecuencia cardiaca"
 python pedir.py "sweet spot de 1 hora, TSS 70"
+python pedir.py "vo2 max de 1 hora con calentamiento de 15 minutos"
 ```
 
 **Progresión (varias sesiones que avanzan):**
@@ -38,6 +39,7 @@ python pedir.py "progresion de sweet spot, inicio 40 min, maximo 90 min"
 |---|---|
 | Zona de entrenamiento | El nombre en español normal: "resistencia aeróbica", "tempo", "sweet spot", "umbral", "vo2 max", "anaeróbico", "neuromuscular" |
 | Duración | "de 1 hora", "de 45 minutos", "50 min" |
+| Calentamiento / enfriamiento fijos (opcional) | "con calentamiento de 15 minutos", "enfriamiento de 5 min" — se usan exactos; si no los pides, el motor los diseña para la sesión |
 | Por potencia (default) | No necesitas decir nada — es lo normal |
 | Por frecuencia cardiaca | Agrega "por frecuencia cardiaca" o "por pulso" |
 | Progresión | Empieza con "una progresión de..." |
@@ -108,6 +110,7 @@ python pedir.py "tempo for 50 minutes"
 python pedir.py "vo2 max for 45 minutes"
 python pedir.py "threshold for 40 minutes by heart rate"
 python pedir.py "sweet spot for 1 hour, TSS 70"
+python pedir.py "vo2 max for 1 hour with a 15 minute warm-up"
 ```
 
 **Progression (multiple sessions that progress):**
@@ -122,6 +125,7 @@ python pedir.py "sweet spot progression, start 40 min, max 90 min"
 |---|---|
 | Training zone | Plain English name: "aerobic endurance", "tempo", "sweet spot", "threshold", "vo2 max", "anaerobic", "neuromuscular" |
 | Duration | "for 1 hour", "for 45 minutes", "50 min" |
+| Fixed warm-up / cool-down (optional) | "with a 15 minute warm-up", "5 min cool-down" — used exactly; otherwise the engine designs them for the session |
 | By power (default) | You don't need to say anything — it's the default |
 | By heart rate | Add "by heart rate" or "by pulse/HR" |
 | Progression | Start with "a progression of..." |

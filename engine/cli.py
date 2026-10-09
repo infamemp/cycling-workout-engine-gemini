@@ -33,6 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Target total duration in MINUTES")
     p.add_argument("--max-duration", type=int, default=None,
                    help="Hard max available duration in MINUTES")
+    p.add_argument("--warmup", type=int, default=None,
+                   help="Warmup length in MINUTES (used exactly)")
+    p.add_argument("--cooldown", type=int, default=None,
+                   help="Cooldown length in MINUTES (used exactly)")
     p.add_argument("--tss", type=float, default=None, help="Target TSS")
     p.add_argument("--if", dest="intensity_factor", type=float, default=None,
                    help="Target Intensity Factor")
@@ -80,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
         max_available_seconds=args.max_duration * 60 if args.max_duration else None,
         target_tss=args.tss,
         target_if=args.intensity_factor,
+        warmup_seconds=args.warmup * 60 if args.warmup else None,
+        cooldown_seconds=args.cooldown * 60 if args.cooldown else None,
         athlete=athlete,
     )
 

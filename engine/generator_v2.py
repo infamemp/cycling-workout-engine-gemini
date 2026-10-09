@@ -25,16 +25,11 @@ from .catalog import Catalog, CatalogEntry
 from .gemini_client import Transport, request_proposal
 from .proposal import (validate_proposal, verify_tss_target, verify_if_target,
                        ProposalRejected)
-from .build_from_proposal import build_main_set, build_hr_staircase_tuples
+from .build_from_proposal import build_main_set
+from .sections import build_section, section_segments, section_seconds
 from .resolve_intensity import (resolve_proposal_intensity, IntensityInfeasible)
 
 
-# Provisional default warmup/cooldown ramp ranges for POWER mode. These remain
-# deterministic in both phases (warmup/cooldown shape is structural, not the
-# creative main-set work). Gemini may later own these too, but Phase 2 keeps
-# them stable to isolate the creative surface to the main set + HR staircase.
-_WARMUP_RAMP = (45, 75)
-_COOLDOWN_RAMP = (75, 45)
 _MAX_RETRIES = 3
 
 
@@ -103,48 +98,33 @@ def generate_single_v2(req: GenerationRequest, *,
             target_tss=req.target_tss, target_if=req.target_if,
             recent=recent, use_web_search=use_web_search,
             rejection_feedback=last_error,  # A4: correct, don't guess blind
+            warmup_seconds=req.warmup_seconds,
+            cooldown_seconds=req.cooldown_seconds,
         )
         try:
-            # Effective structure durations — what the builder will ACTUALLY
-            # use (defaults filled; in HR the real staircase sum governs the
-            # warmup). Validated against the budget so the ceiling cannot be
-            # bypassed by omitting fields (C2) or by declaring a warmup that
-            # disagrees with the staircase (M2, budget side).
-            warmup_s = candidate.get("warmup_seconds", struct.WARMUP_RAMP_MAX)
-            prep_s = candidate.get("prep_seconds", struct.PREP_MAX_SECONDS)
-            cooldown_s = candidate.get("cooldown_seconds", struct.COOLDOWN_MAX)
-            stair: Optional[list] = None
-            if req.mode == "hr":
-                stair = build_hr_staircase_tuples(candidate) or \
-                    list(struct.DEFAULT_HR_STAIRCASE)
-                warmup_s = sum(s[2] for s in stair)
-
+            # Warmup and cooldown are designed per session by the reasoning
+            # layer (spec 11, v2.7) and validated with the rest; a length the
+            # user asked for must be met exactly.
             validate_proposal(candidate, mode=req.mode,
                               dominant_zone=req.requested_zone,
                               total_budget_seconds=budget,
                               enforce_floor=floor_applies,
-                              structure_seconds=(warmup_s, prep_s, cooldown_s))
+                              requested_warmup_seconds=req.warmup_seconds,
+                              requested_cooldown_seconds=req.cooldown_seconds)
 
             # --- Deterministic intensity resolution (C3, spec 16.2) ---
-            # Power mode with a TSS/IF target: Gemini fixed the STRUCTURE;
-            # the engine now solves the one free variable — the dominant
-            # work intensity — in closed form. Never left to guessing.
+            # Power mode with a TSS/IF target: Gemini fixed the STRUCTURE
+            # (warmup and cooldown included); the engine now solves the one
+            # free variable — the dominant work intensity. Never guessed.
             if req.mode == "power" and (req.target_tss is not None
                                         or req.target_if is not None):
-                before_segments = [
-                    tssmod.Segment(float(warmup_s), _WARMUP_RAMP[0] / 100.0,
-                                   _WARMUP_RAMP[1] / 100.0),
-                    tssmod.Segment(float(prep_s),
-                                   (struct.PREP_LOW + struct.PREP_HIGH) / 2.0 / 100.0),
-                ]
-                after_segments = [
-                    tssmod.Segment(float(cooldown_s), _COOLDOWN_RAMP[0] / 100.0,
-                                   _COOLDOWN_RAMP[1] / 100.0),
-                ]
+                before_segments = section_segments(candidate["warmup"])
+                after_segments = section_segments(candidate["cooldown"])
                 if req.target_if is not None:
                     np_target = req.target_if
                 else:
-                    total_s = warmup_s + prep_s + cooldown_s + \
+                    total_s = section_seconds(candidate["warmup"]) + \
+                        section_seconds(candidate["cooldown"]) + \
                         _proposal_main_seconds(candidate)
                     np_target = tssmod.if_from(req.target_tss, total_s)
                 try:
@@ -158,15 +138,8 @@ def generate_single_v2(req: GenerationRequest, *,
                 except IntensityInfeasible as e:
                     raise ProposalRejected(str(e))
 
-            if req.mode == "power":
-                w = struct.build_warmup(req.mode, *_WARMUP_RAMP,
-                                        ramp_seconds=warmup_s, prep_seconds=prep_s)
-                c = struct.build_cooldown_ramp(req.mode, *_COOLDOWN_RAMP,
-                                               seconds=cooldown_s)
-            else:
-                w = struct.build_warmup_hr_staircase(stair, prep_seconds=prep_s)
-                c = struct.build_cooldown_hr_single(60, 70, seconds=cooldown_s)
-
+            w = build_section(req.mode, candidate["warmup"], "warmup")
+            c = build_section(req.mode, candidate["cooldown"], "cooldown")
             m = build_main_set(req.mode, candidate)
             md = assembler.build_markdown(w, m, c)
             load = assembler.compute_load(w, m, c, mode=req.mode,
@@ -249,9 +222,5 @@ def _proposal_main_seconds(proposal: dict) -> int:
 
 
 def _total_duration(warmup, main_set, cooldown) -> int:
-    warm = warmup.prep.duration_seconds
-    if warmup.steps:
-        warm += sum(s.duration_seconds for s in warmup.steps)
-    elif warmup.ramp is not None:
-        warm += warmup.ramp.duration_seconds
-    return warm + _elements_duration(main_set) + _elements_duration(cooldown)
+    return (_elements_duration(warmup) + _elements_duration(main_set)
+            + _elements_duration(cooldown))

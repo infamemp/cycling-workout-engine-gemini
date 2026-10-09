@@ -27,10 +27,22 @@ from engine import llm_config  # noqa: E402
 
 
 def _hr_proposal(stair):
+    """v0.6.0: the staircase is the warmup itself, as steps. Each test
+    triple is [low_pct, high_pct, seconds] and is passed through as given,
+    so malformed values reach the validator unchanged."""
+    warm = []
+    for t in stair:
+        if isinstance(t, (list, tuple)) and len(t) == 3:
+            warm.append({"element": "step", "low_pct": t[0], "high_pct": t[1],
+                         "duration_seconds": t[2]})
+        else:
+            warm.append({"element": "step", "low_pct": t[0] if t else None})
     return {
         "structural_pattern": "classic_interval",
         "summary": "HR tempo",
-        "hr_warmup_staircase": stair,
+        "warmup": warm,
+        "cooldown": [{"element": "step", "duration_seconds": 300,
+                      "low_pct": 60, "high_pct": 70}],
         "main_set": [
             {"element": "repeat", "repeats": 3, "steps": [
                 {"duration_seconds": 360, "low_pct": 90, "high_pct": 93,
@@ -58,12 +70,12 @@ def test_staircase_equal_lows_pass():
 
 
 def test_staircase_descending_rejected():
-    with pytest.raises(ProposalRejected, match="not ascending"):
+    with pytest.raises(ProposalRejected, match="climb"):
         _check([[70, 80, 120], [60, 70, 120]])
 
 
 def test_staircase_wrong_length_rejected():
-    with pytest.raises(ProposalRejected, match="exactly"):
+    with pytest.raises(ProposalRejected, match="non-integer"):
         _check([[50, 60]])
 
 
@@ -88,17 +100,21 @@ def test_staircase_negative_rejected():
 
 
 def test_staircase_zero_seconds_rejected():
-    with pytest.raises(ProposalRejected, match="non-positive"):
+    with pytest.raises(ProposalRejected, match="must be positive"):
         _check([[50, 60, 0]])
 
 
-def test_staircase_not_checked_in_power_mode():
-    # Power mode ignores the field (it uses a ramp), so a malformed one
-    # cannot block a power session.
-    p = _hr_proposal([[70, 60, 120]])
+def test_ramps_are_power_only():
+    # v0.6.0: a power warmup may ramp; heart rate cannot follow a ramp.
+    p = _hr_proposal([[50, 60, 120]])
+    p["warmup"] = [{"element": "ramp", "duration_seconds": 300,
+                    "from_pct": 60, "to_pct": 80}]
+    with pytest.raises(ProposalRejected, match="power-mode only"):
+        validate_proposal(p, mode="hr", dominant_zone="Tempo")
     p["main_set"][0]["steps"][0].update(low_pct=80, high_pct=88)
     p["main_set"][0]["steps"][1].update(low_pct=50, high_pct=55,
                                         zone_name="ActiveRecovery")
+    p["warmup"][0].update(from_pct=45, to_pct=70)
     validate_proposal(p, mode="power", dominant_zone="Tempo")
 
 

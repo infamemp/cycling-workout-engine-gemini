@@ -38,17 +38,19 @@ class Athlete:
     cp_watts: Optional[float] = None        # = FTP display label
     w_prime_joules: Optional[float] = None
     lthr_bpm: Optional[float] = None
-    # HR-mode load (HRSS, spec 16.6) needs all three heart-rate values;
-    # without them the engine uses a typical profile and says so.
+    # HR-mode load (HRSS, spec 16.6) needs LTHR and max HR; a missing
+    # resting HR takes Intervals.icu's own default of 60 bpm. Without LTHR
+    # or max HR the engine uses a typical profile and says so.
     max_hr_bpm: Optional[float] = None
     resting_hr_bpm: Optional[float] = None
 
     def hr_profile(self):
         """The athlete's HrProfile, or None when any value is missing."""
-        from .tss import HrProfile
-        if self.lthr_bpm and self.max_hr_bpm and self.resting_hr_bpm:
+        from .tss import HrProfile, DEFAULT_RESTING_HR_BPM
+        if self.lthr_bpm and self.max_hr_bpm:
+            rest = self.resting_hr_bpm or DEFAULT_RESTING_HR_BPM
             prof = HrProfile(float(self.lthr_bpm), float(self.max_hr_bpm),
-                             float(self.resting_hr_bpm))
+                             float(rest))
             return prof if prof.valid() else None
         return None
 
@@ -62,6 +64,9 @@ class GenerationRequest:
     max_available_seconds: Optional[int] = None
     target_tss: Optional[float] = None
     target_if: Optional[float] = None
+    # A warmup / cooldown length the user asked for; adopted exactly.
+    warmup_seconds: Optional[int] = None
+    cooldown_seconds: Optional[int] = None
     athlete: Athlete = field(default_factory=Athlete)
     progression: Optional[ProgressionSpec] = None
 
@@ -70,7 +75,7 @@ class GenerationRequest:
 
 @dataclass
 class Step:
-    role: str                  # warmup_ramp | warmup_step | warmup_prep | work | recovery | cooldown
+    role: str                  # warmup | work | recovery | cooldown
     duration_seconds: int
     is_ramp: bool = False
     flat_low: Optional[int] = None
@@ -95,16 +100,6 @@ SectionElement = object  # documented union; kept loose for the core
 
 
 @dataclass
-class Warmup:
-    # Power mode: `ramp` holds the single ascending ramp step, `steps` is None.
-    # HR mode: `steps` holds the ascending staircase (list of Steps), `ramp` is None.
-    # In both modes `prep` is the flexible (1-2 min) always-present prep block.
-    prep: Step
-    ramp: Optional[Step] = None
-    steps: Optional[list] = None   # list[Step] for HR staircase
-
-
-@dataclass
 class Feasibility:
     satisfied: bool = True
     conflict_report: Optional[str] = None
@@ -118,7 +113,7 @@ class GeneratedSession:
     dominant_zone: str
     structural_pattern: Optional[str]
     complementary_zones: list[str]
-    warmup: Warmup
+    warmup: list                  # list[Step | RepeatBlock]
     main_set: list                # list[Step | RepeatBlock]
     cooldown: list                # list[Step | RepeatBlock]
     estimated_tss: float

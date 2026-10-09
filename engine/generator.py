@@ -5,8 +5,8 @@ Flow: request -> (conflict checks) -> build mandatory structure ->
 provisional main set -> assemble .md -> compute real TSS -> catalog.
 
 ================================ IMPORTANT ================================
-The structure DECISIONS in this module (warmup ramp range, main-set reps/
-durations, cooldown form) are PROVISIONAL PHASE-1 PLACEHOLDERS, present only
+The structure DECISIONS in this module (simple warmup/cooldown, main-set
+reps/durations) are PROVISIONAL PHASE-1 PLACEHOLDERS, present only
 so the pipeline runs end-to-end and is testable. The Phase-2 Claude reasoning
 layer will REPLACE these decisions with real, varied, catalog-aware,
 physiology-grounded reasoning. The plumbing (structure assembly, TSS math,
@@ -26,9 +26,33 @@ from . import assembler
 from .catalog import Catalog, CatalogEntry
 
 
-# Provisional default warmup/cooldown ramp ranges (Phase-1 only).
-_WARMUP_RAMP = (45, 75)
-_COOLDOWN_RAMP = (75, 45)
+from .sections import default_sections, build_section, validate_section
+
+# Main-set shapes the placeholder can pick from (seconds): work, recovery.
+_WORK_CHOICES = (300, 480, 600)
+_REC_CHOICES = (120, 180)
+
+
+def _fit_main_set(rng: random.Random, main_budget: Optional[int]):
+    """Reps / work / recovery for the placeholder main set. With a budget,
+    the largest set that fits it (at least 2 reps; shorter work bouts when
+    time is short); without one, a seeded random pick as before."""
+    if main_budget is None:
+        return rng.choice([3, 4, 5]), rng.choice(_WORK_CHOICES), rng.choice(_REC_CHOICES)
+    best = None
+    for work in _WORK_CHOICES + (180, 120):
+        for rec in _REC_CHOICES + (60,):
+            reps = min(main_budget // (work + rec), 8)
+            if reps < 2:
+                continue
+            used = reps * (work + rec)
+            if best is None or used > best[0]:
+                best = (used, reps, work, rec)
+    if best is None:
+        raise struct.ConstraintConflict(
+            f"no main set of at least 2 repetitions fits the "
+            f"{max(main_budget, 0) // 60} min left after warmup and cooldown")
+    return best[1], best[2], best[3]
 
 
 def generate_single(req: GenerationRequest, *,
@@ -58,38 +82,31 @@ def generate_single(req: GenerationRequest, *,
     z_low = zone.low_pct
     z_high = zone.high_pct if zone.high_pct is not None else zone.low_pct + 10
 
-    # --- Mandatory structure (durable), mode-dependent shape (spec 11) ---
-    if req.mode == "power":
-        warmup = struct.build_warmup(req.mode, *_WARMUP_RAMP)
-        cooldown = struct.build_cooldown_ramp(req.mode, *_COOLDOWN_RAMP)
-    else:  # hr — staircase warmup + single-block cooldown (spec 11.1/11.3)
-        # [PHASE-1 PLACEHOLDER] staircase step count/%s are provisional; the
-        # number of steps is NOT fixed (Phase 2 reasons it). Here we build a
-        # simple ascending staircase toward the main-set zone.
-        n_steps = rng.choice([4, 5, 6])           # provisional, not fixed
-        start_pct = 50
-        end_pct = max(start_pct + 1, min(z_low, 85))
-        span = end_pct - start_pct
-        stair: list[tuple[int, int, int]] = []
-        for i in range(n_steps):
-            lo = round(start_pct + span * i / n_steps)
-            hi = round(start_pct + span * (i + 1) / n_steps)
-            stair.append((lo, hi, 120))           # 2 min each (<=10 min total)
-        # clip total to 10 min
-        while sum(s[2] for s in stair) > struct.WARMUP_RAMP_MAX:
-            stair.pop()
-        warmup = struct.build_warmup_hr_staircase(stair)
-        cooldown = struct.build_cooldown_hr_single(60, 70)
+    # --- Warmup and cooldown (spec 11, v2.7) ---
+    # The offline generator has no reasoning layer, so it uses simple
+    # sections sized to the session; a length the user asked for is used as
+    # given. Validated with the same checks as a reasoned session.
+    _caps = [x for x in (req.target_duration_seconds, req.max_available_seconds) if x]
+    budget = min(_caps) if _caps else None
+    warm_raw, cool_raw = default_sections(req.mode, budget, req.warmup_seconds,
+                                          req.cooldown_seconds)
+    validate_section("warmup", warm_raw, mode=req.mode,
+                     requested_seconds=req.warmup_seconds)
+    validate_section("cooldown", cool_raw, mode=req.mode,
+                     requested_seconds=req.cooldown_seconds)
+    warmup = build_section(req.mode, warm_raw, "warmup")
+    cooldown = build_section(req.mode, cool_raw, "cooldown")
+    used = assembler.elements_seconds(warmup) + assembler.elements_seconds(cooldown)
 
-    # --- PROVISIONAL main set (Phase-1 placeholder) ---
-    # Dumb fixed-ish shape, lightly seeded for variety in testing only.
-    reps = rng.choice([3, 4, 5])
-    work_each = rng.choice([300, 480, 600])  # 5/8/10 min
-    recovery_each = rng.choice([120, 180])
+    # --- PROVISIONAL main set (Phase-1 placeholder), fitted to the budget ---
+    reps, work_each, recovery_each = _fit_main_set(
+        rng, None if budget is None else budget - used)
+    rec_low, rec_high = (50, 60) if req.mode == "power" else (70, 80)
     main_block = struct.provisional_main_set(
         mode=req.mode, zone_low=z_low, zone_high=z_high,
         work_seconds_each=work_each, reps=reps,
-        recovery_low=50, recovery_high=60, recovery_seconds=recovery_each,
+        recovery_low=rec_low, recovery_high=rec_high,
+        recovery_seconds=recovery_each,
     )
     main_set = [main_block]
 
@@ -124,23 +141,9 @@ def generate_single(req: GenerationRequest, *,
     )
 
     if catalog is not None:
-        # Mode-safe warmup duration: power mode has a single ramp; HR mode has
-        # a staircase in warmup.steps and ramp is None (this previously crashed
-        # with AttributeError on HR + catalog).
-        warmup_dur = warmup.prep.duration_seconds
-        if warmup.steps:
-            warmup_dur += sum(s.duration_seconds for s in warmup.steps)
-        elif warmup.ramp is not None:
-            warmup_dur += warmup.ramp.duration_seconds
-        total_dur = warmup_dur + sum(
-            (b.repeats * sum(s.duration_seconds for s in b.steps))
-            if hasattr(b, "repeats") else b.duration_seconds
-            for b in main_set
-        ) + sum(
-            (b.repeats * sum(s.duration_seconds for s in b.steps))
-            if hasattr(b, "repeats") else b.duration_seconds
-            for b in cooldown
-        )
+        total_dur = (assembler.elements_seconds(warmup)
+                     + assembler.elements_seconds(main_set)
+                     + assembler.elements_seconds(cooldown))
         catalog.add(CatalogEntry(
             id=sid, generated_at=session.generated_at, mode=req.mode,
             dominant_zone=req.requested_zone,

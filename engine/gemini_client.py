@@ -33,8 +33,8 @@ Transport = Callable[[str, str, list, bool], dict]
 def build_system_prompt() -> str:
     return (
         "You are the reasoning core of an indoor cycling workout generator. "
-        "You design the STRUCTURE of one workout's main set (and, in HR mode, "
-        "the warmup staircase). You are an expert who reasons from exercise "
+        "You design the STRUCTURE of one workout: warmup, main set and "
+        "cooldown. You are an expert who reasons from exercise "
         "physiology and methodology — never from a fixed menu. Your decisions "
         "must respect these hard rules:\n"
         "- The requested zone is the DOMINANT stimulus (most work time-in-zone). "
@@ -47,7 +47,15 @@ def build_system_prompt() -> str:
         "and does the math.\n"
         "- Vary structure to avoid monotony, but honor every parameter the user "
         "fixed. Use the provided recent-history context to avoid handing back an "
-        "effectively identical session, and to progress naturally when relevant."
+        "effectively identical session, and to progress naturally when relevant.\n"
+        "- Warmup and cooldown are part of the design, never a template: give "
+        "every element a reason. In short sessions keep them brief (~5 min "
+        "warmup, 2-3 min cooldown) so the time goes to the work; lengthen them "
+        "as duration and intensity grow; a warmup before hard work may carry "
+        "short openers. A warmup starts easy; a cooldown stays easy and ends "
+        "easy. Power mode may use ramps; in HR mode use steps only (heart "
+        "rate lags a changing target) and make the warmup climb. Say why in "
+        "warmup_cooldown_rationale."
     )
 
 
@@ -56,7 +64,9 @@ def build_user_prompt(*, mode: str, zone: str,
                       target_tss: Optional[float],
                       target_if: Optional[float],
                       recent: list[CatalogEntry],
-                      rejection_feedback: Optional[str] = None) -> str:
+                      rejection_feedback: Optional[str] = None,
+                      warmup_seconds: Optional[int] = None,
+                      cooldown_seconds: Optional[int] = None) -> str:
     lines = [
         f"Mode: {mode}",
         f"Requested dominant zone: {zone}",
@@ -75,10 +85,10 @@ def build_user_prompt(*, mode: str, zone: str,
                      "target. Your proposed work percentages set the range "
                      "width and the internal ratios between work steps, not "
                      "the final absolute level.")
+    lines += _fixed_sections_lines(warmup_seconds, cooldown_seconds)
     if mode == "hr":
-        lines.append("HR mode: warmup must be ASCENDING STEPS (a staircase), "
-                     "not a ramp. Provide hr_warmup_staircase as ascending "
-                     "[low%,high%,seconds] steps totaling <=10 min.")
+        lines.append("HR mode: write the warmup as climbing steps (no ramps), "
+                     "and the cooldown as steps.")
     if recent:
         lines.append("\nRecent sessions you have generated (context — reason "
                      "over these to add variety / progress naturally; do not "
@@ -94,8 +104,23 @@ def build_user_prompt(*, mode: str, zone: str,
             "Produce a corrected proposal that fixes this specific issue. "
             "Every parameter the user fixed still applies unchanged."
         )
-    lines.append("\nReturn your structural design for the main set strictly matching the JSON schema.")
+    lines.append("\nReturn your structural design (warmup, main set, cooldown) "
+                 "strictly matching the JSON schema.")
     return "\n".join(lines)
+
+
+def _fixed_sections_lines(warmup_seconds: Optional[int],
+                          cooldown_seconds: Optional[int]) -> list[str]:
+    """The user's own warmup / cooldown lengths, which must be met exactly."""
+    out = []
+    if warmup_seconds:
+        out.append(f"The user fixed the WARMUP at exactly {warmup_seconds // 60} "
+                   f"min ({warmup_seconds}s): its elements must add up to that.")
+    if cooldown_seconds:
+        out.append(f"The user fixed the COOLDOWN at exactly "
+                   f"{cooldown_seconds // 60} min ({cooldown_seconds}s): its "
+                   f"elements must add up to that.")
+    return out
 
 
 _RESEARCH_INSTRUCTION = (
@@ -178,7 +203,9 @@ def request_proposal(*, transport: Transport, mode: str, zone: str,
                      target_if: Optional[float] = None,
                      recent: Optional[list[CatalogEntry]] = None,
                      use_web_search: bool = False,
-                     rejection_feedback: Optional[str] = None) -> dict:
+                     rejection_feedback: Optional[str] = None,
+                     warmup_seconds: Optional[int] = None,
+                     cooldown_seconds: Optional[int] = None) -> dict:
 
     system = build_system_prompt()
     user = build_user_prompt(
@@ -187,6 +214,7 @@ def request_proposal(*, transport: Transport, mode: str, zone: str,
         target_tss=target_tss, target_if=target_if,
         recent=recent or [],
         rejection_feedback=rejection_feedback,
+        warmup_seconds=warmup_seconds, cooldown_seconds=cooldown_seconds,
     )
     return transport(system, user, [PROPOSAL_TOOL_SCHEMA], use_web_search)
 
@@ -196,7 +224,9 @@ def request_progression(*, transport: Transport, mode: str, zone: str,
                         max_session_seconds: Optional[int] = None,
                         recent: Optional[list[CatalogEntry]] = None,
                         use_web_search: bool = False,
-                        rejection_feedback: Optional[str] = None) -> dict:
+                        rejection_feedback: Optional[str] = None,
+                        warmup_seconds: Optional[int] = None,
+                        cooldown_seconds: Optional[int] = None) -> dict:
 
     from .progression import PROGRESSION_TOOL_SCHEMA
 
@@ -229,9 +259,13 @@ def request_progression(*, transport: Transport, mode: str, zone: str,
             "research (e.g. how many minutes in-zone it makes sense to progress "
             "to). When the ceiling is reached, add a graduation_note for the "
             "next stimulus.")
+    fixed = _fixed_sections_lines(warmup_seconds, cooldown_seconds)
+    if fixed:
+        lines.append("In EVERY session of the progression:")
+        lines += fixed
     if mode == "hr":
-        lines.append("HR mode: each session's warmup is an ascending STAIRCASE "
-                     "(hr_warmup_staircase), never a ramp.")
+        lines.append("HR mode: each session's warmup is climbing steps (no "
+                     "ramps), and its cooldown is steps.")
     if recent:
         lines.append("\nYour own catalog of recent sessions (your memory/"
                      "library — reuse/adapt your prior reasoning, don't reinvent "

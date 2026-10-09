@@ -44,10 +44,3 @@ def build_main_set(mode: str, proposal: dict) -> list:
             steps = [_build_step(mode, s) for s in el["steps"]]
             out.append(RepeatBlock(repeats=el["repeats"], steps=steps))
     return out
-
-
-def build_hr_staircase_tuples(proposal: dict) -> list[tuple[int, int, int]]:
-    """Extract the HR warmup staircase as (low, high, seconds) tuples, if the
-    proposal provided one (HR mode). Returns [] if absent."""
-    stair = proposal.get("hr_warmup_staircase") or []
-    return [(s[0], s[1], s[2]) for s in stair]

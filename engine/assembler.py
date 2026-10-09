@@ -6,7 +6,7 @@ real (rounded) TSS estimate (spec 16.4).
 
 from __future__ import annotations
 from dataclasses import dataclass
-from .models import Step, RepeatBlock, Warmup, GeneratedSession, Feasibility
+from .models import Step, RepeatBlock
 from .render import validate_output
 from . import tss as tssmod
 
@@ -47,14 +47,14 @@ class LoadEstimate:
         return self.method == "hrss_typical"
 
 
-def session_segments(warmup: Warmup, main_set: list,
+def session_segments(warmup: list, main_set: list,
                      cooldown: list) -> list[tssmod.Segment]:
     """The whole session as ordered load segments."""
-    return (_warmup_segments(warmup) + _collect_segments(main_set)
+    return (_collect_segments(warmup) + _collect_segments(main_set)
             + _collect_segments(cooldown))
 
 
-def compute_load(warmup: Warmup, main_set: list, cooldown: list,
+def compute_load(warmup: list, main_set: list, cooldown: list,
                  mode: str = "power",
                  hr_profile: tssmod.HrProfile | None = None) -> LoadEstimate:
     """Real load of the fully-built (rounded) session — spec 16.4: report
@@ -68,25 +68,13 @@ def compute_load(warmup: Warmup, main_set: list, cooldown: list,
                         tssmod.intensity_factor(segs), "np_30s")
 
 
-def compute_tss_if(warmup: Warmup, main_set: list, cooldown: list,
+def compute_tss_if(warmup: list, main_set: list, cooldown: list,
                    mode: str = "power",
                    hr_profile: tssmod.HrProfile | None = None
                    ) -> tuple[float, float]:
     """(TSS, IF) of the built session; see compute_load."""
     est = compute_load(warmup, main_set, cooldown, mode, hr_profile)
     return est.tss, est.intensity_factor
-
-
-def _warmup_segments(warmup: Warmup) -> list[tssmod.Segment]:
-    """Warmup segments: a power ramp (single step) OR an HR staircase (many)."""
-    segs: list[tssmod.Segment] = []
-    if warmup.steps:                       # HR staircase
-        for st in warmup.steps:
-            segs += _segments_from_step(st)
-    elif warmup.ramp is not None:          # power ramp
-        segs += _segments_from_step(warmup.ramp)
-    segs += _segments_from_step(warmup.prep)
-    return segs
 
 
 def _render_elements(elements: list) -> list[str]:
@@ -105,33 +93,27 @@ def _render_elements(elements: list) -> list[str]:
     return lines
 
 
-def build_markdown(warmup: Warmup, main_set: list, cooldown: list) -> str:
+def elements_seconds(elements: list) -> int:
+    """Total seconds of a list of Steps / RepeatBlocks."""
+    total = 0
+    for el in elements:
+        if isinstance(el, RepeatBlock):
+            total += el.repeats * sum(s.duration_seconds for s in el.steps)
+        else:
+            total += el.duration_seconds
+    return total
+
+
+def build_markdown(warmup: list, main_set: list, cooldown: list) -> str:
     """Assemble the complete .md (headers + lines), then run the output gate."""
     out: list[str] = []
-    out.append("# Warmup")
-    out.append("")
-    if warmup.steps:                       # HR staircase: each step on its line
-        for st in warmup.steps:
-            out.append(st.rendering)
+    for header, elements in (("# Warmup", warmup), ("# Main Set", main_set),
+                             ("# Cooldown", cooldown)):
+        if out and out[-1] != "":
+            out.append("")
+        out.append(header)
         out.append("")
-    elif warmup.ramp is not None:          # power ramp
-        out.append(warmup.ramp.rendering)
-        out.append("")
-    out.append(warmup.prep.rendering)
-    out.append("")
-    out.append("# Main Set")
-    main_lines = _render_elements(main_set)
-    # if the first main-set line is a plain step (not a blank before a repeat),
-    # add a blank line after the header for consistency
-    if main_lines and main_lines[0] != "":
-        out.append("")
-    out += main_lines
-    # ensure a blank line separates Main Set from the Cooldown header
-    if not out or out[-1] != "":
-        out.append("")
-    out.append("# Cooldown")
-    out.append("")
-    out += _render_elements(cooldown)
+        out += _render_elements(elements)
 
     # Collapse accidental multiple blank lines to at most one.
     cleaned: list[str] = []

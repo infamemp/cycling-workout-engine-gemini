@@ -130,6 +130,8 @@ def main() -> int:
         max_available_seconds=maxd_min * 60 if maxd_min else None,
         target_tss=parsed.get("target_tss"),
         target_if=parsed.get("target_if"),
+        warmup_seconds=(parsed.get("warmup_minutes") or 0) * 60 or None,
+        cooldown_seconds=(parsed.get("cooldown_minutes") or 0) * 60 or None,
         athlete=athlete,
     )
 

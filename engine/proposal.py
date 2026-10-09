@@ -10,13 +10,14 @@ never silently "fixed", never accepted blind.
 Division of responsibility (confirmed):
   - Claude decides: main-set structure (reps, durations, recoveries, pattern),
     intensity %s within the requested zone, optional subordinate complementary
-    stimuli, HR staircase shape, progression week-to-week shape.
+    stimuli, the warmup and cooldown of each session, progression shape.
   - Python owns: validation, TSS/IF math, rendering, output gate. Claude never
     does the math and never produces the final syntax directly.
 """
 
 from __future__ import annotations
 from .zones import zones_for_mode, zone_by_name
+from .sections import SECTION_SCHEMA, validate_section, SectionRejected
 
 
 # --- The tool schema Claude must fill (passed to the API as a tool) ----------
@@ -25,7 +26,8 @@ from .zones import zones_for_mode, zone_by_name
 PROPOSAL_TOOL_SCHEMA = {
     "name": "propose_workout",
     "description": (
-        "Propose the STRUCTURE of one indoor cycling workout's main set. "
+        "Propose the STRUCTURE of one indoor cycling workout: its warmup, "
+        "main set and cooldown. "
         "Return structural intent only — do NOT compute TSS/IF and do NOT "
         "write intervals.icu syntax; the engine does that. Respect the "
         "requested zone as the dominant stimulus; any complementary stimuli "
@@ -34,7 +36,8 @@ PROPOSAL_TOOL_SCHEMA = {
     ),
     "input_schema": {
         "type": "object",
-        "required": ["structural_pattern", "main_set", "summary"],
+        "required": ["structural_pattern", "warmup", "main_set", "cooldown",
+                     "summary"],
         "properties": {
             "structural_pattern": {
                 "type": "string",
@@ -97,32 +100,21 @@ PROPOSAL_TOOL_SCHEMA = {
                     },
                 },
             },
-            # HR mode only: staircase warmup shape (number of steps engine-free)
-            "hr_warmup_staircase": {
-                "type": "array",
-                "description": "HR mode only. Ascending steps; each [low%, high%, seconds].",
-                "items": {
-                    "type": "array",
-                    "minItems": 3, "maxItems": 3,
-                    "items": {"type": "integer"},
-                },
-            },
             "summary": {"type": "string"},
-            "warmup_seconds": {
-                "type": "integer", "minimum": 1,
-                "description": "Engine-reasoned warmup duration (ramp or "
-                "staircase total). Cap 600s (10 min); size it to the session "
-                "budget — keep it short in short sessions.",
-            },
-            "prep_seconds": {
-                "type": "integer", "minimum": 60, "maximum": 120,
-                "description": "Prep block duration, 60-120s (1-2 min), always "
-                "present.",
-            },
-            "cooldown_seconds": {
-                "type": "integer", "minimum": 1,
-                "description": "Engine-reasoned cooldown duration. Cap 300s "
-                "(5 min); size to budget.",
+            "warmup": dict(SECTION_SCHEMA, description=(
+                "The warmup, designed for THIS session (not a template): "
+                "start easy and build; brief (~5 min) in short sessions, "
+                "longer as duration and intensity grow; short openers "
+                "before hard work are fine. Power mode may use ramps; "
+                "HR mode uses climbing steps only.")),
+            "cooldown": dict(SECTION_SCHEMA, description=(
+                "The cooldown, designed for THIS session: easy all the way "
+                "and ending easy; brief (2-3 min) in short sessions, longer "
+                "after long or hard ones.")),
+            "warmup_cooldown_rationale": {
+                "type": "string",
+                "description": "One sentence: why this warmup and cooldown "
+                               "for this session.",
             },
         },
     },
@@ -233,44 +225,6 @@ def _check_unknown_fields(proposal: dict) -> None:
                         f"main_set element {i}")
 
 
-def _check_hr_staircase(stair: list) -> None:
-    """Sanity-check an HR warmup staircase (spec 11: ascending steps, never a
-    ramp, never stepping down). This was previously never validated at all —
-    only its total seconds were summed for the budget — so a malformed or
-    descending staircase from the reasoning layer would pass through
-    silently. Each entry must be [low_pct, high_pct, seconds]."""
-    prev_low = None
-    for i, step in enumerate(stair):
-        if (not isinstance(step, (list, tuple))) or len(step) != 3:
-            raise ProposalRejected(
-                f"hr_warmup_staircase step {i} must be exactly "
-                f"[low_pct, high_pct, seconds]: {step!r}")
-        lo, hi, secs = step
-        for label, v in (("low_pct", lo), ("high_pct", hi), ("seconds", secs)):
-            if isinstance(v, bool) or not isinstance(v, int):
-                raise ProposalRejected(
-                    f"hr_warmup_staircase step {i} has a non-integer "
-                    f"{label}: {v!r}")
-        if lo < 0 or hi < 0:
-            raise ProposalRejected(
-                f"hr_warmup_staircase step {i} has a negative percent: {step!r}")
-        if lo > hi:
-            raise ProposalRejected(
-                f"hr_warmup_staircase step {i} has low_pct {lo} > "
-                f"high_pct {hi}")
-        if secs <= 0:
-            raise ProposalRejected(
-                f"hr_warmup_staircase step {i} has non-positive "
-                f"seconds: {secs}")
-        if prev_low is not None and lo < prev_low:
-            raise ProposalRejected(
-                f"hr_warmup_staircase is not ascending: step {i}'s "
-                f"low_pct {lo}% is below the previous step's {prev_low}% "
-                f"— a staircase must climb, never step down"
-            )
-        prev_low = lo
-
-
 def _collect_used_zones(main_set: list, dominant_zone: str) -> set[str]:
     """Collect all non-dominant, non-recovery zone names actually used across
     main_set (steps and repeat-block inner steps), for the metadata-honesty
@@ -294,7 +248,8 @@ def _collect_used_zones(main_set: list, dominant_zone: str) -> set[str]:
 def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
                       total_budget_seconds: int | None = None,
                       enforce_floor: bool = True,
-                      structure_seconds: tuple[int, int, int] | None = None) -> None:
+                      requested_warmup_seconds: int | None = None,
+                      requested_cooldown_seconds: int | None = None) -> None:
     """Validate a Claude proposal against the hard rules. Raises
     ProposalRejected on the first violation; returns None if acceptable.
 
@@ -303,8 +258,9 @@ def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
       - work intensities within their named zone bounds
       - no nested repeats
       - dominant stimulus must actually dominate (most work time-in-zone)
-      - structural duration caps (warmup<=600s, prep 60-120s, cooldown<=300s)
-      - if a total budget is given: warmup+prep+cooldown+main_set <= budget
+      - warmup and cooldown designed per session but sane (sections.py):
+        start easy / end easy, HR steps only, a user-requested length exact
+      - if a total budget is given: warmup+main_set+cooldown <= budget
         (pure arithmetic conservation of the total, NOT a training rule)
     """
     valid = _zone_names(mode)
@@ -316,25 +272,14 @@ def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
     if not proposal.get("main_set"):
         raise ProposalRejected("main_set is empty")
 
-    # --- Structural duration caps (spec 11: these are maxima, not targets) ---
-    warmup_s = proposal.get("warmup_seconds")
-    prep_s = proposal.get("prep_seconds")
-    cooldown_s = proposal.get("cooldown_seconds")
-    if warmup_s is not None and warmup_s > 600:
-        raise ProposalRejected(f"warmup {warmup_s}s exceeds 600s cap")
-    if prep_s is not None and not (60 <= prep_s <= 120):
-        raise ProposalRejected(f"prep {prep_s}s outside 60-120s")
-    if cooldown_s is not None and cooldown_s > 300:
-        raise ProposalRejected(f"cooldown {cooldown_s}s exceeds 300s cap")
-
-    # HR mode: sanity-check the warmup staircase's actual content (spec 11).
-    # Previously only its total seconds were summed for the budget — nothing
-    # checked that steps were ascending, non-negative, or internally
-    # consistent (low_pct <= high_pct).
-    if mode == "hr":
-        stair = proposal.get("hr_warmup_staircase")
-        if stair:
-            _check_hr_staircase(stair)
+    # --- Warmup and cooldown (spec 11, v2.7: designed per session) ---
+    try:
+        warm_s = validate_section("warmup", proposal.get("warmup"), mode=mode,
+                                  requested_seconds=requested_warmup_seconds)
+        cool_s = validate_section("cooldown", proposal.get("cooldown"), mode=mode,
+                                  requested_seconds=requested_cooldown_seconds)
+    except SectionRejected as e:
+        raise ProposalRejected(str(e))
 
     dominant_work = 0
     other_work = 0
@@ -411,36 +356,17 @@ def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
     # which is exactly the rigidity this project avoids. Only a genuinely
     # considerable shortfall is caught.
     #
-    # C2/A3 hardening:
-    #   - `structure_seconds`, when given by the caller, is the EFFECTIVE
-    #     (warmup, prep, cooldown) the builder will actually use — defaults
-    #     already filled, and in HR mode the real staircase sum. This closes
-    #     the bypass where omitted fields validated as 0 but built as caps.
-    #   - `enforce_floor` distinguishes a TARGET duration (floor + ceiling)
-    #     from a MAXIMUM (ceiling only). Filling more of the athlete's
-    #     available time is a coaching decision, never the engine's to force.
+    # `enforce_floor` distinguishes a TARGET duration (floor + ceiling) from
+    # a MAXIMUM (ceiling only). Filling more of the athlete's available time
+    # is a coaching decision, never the engine's to force.
     _BUDGET_FLOOR_FRACTION = 0.80  # allow up to 20% under budget with no rejection
     if total_budget_seconds is not None:
-        if structure_seconds is not None:
-            w_eff, p_eff, c_eff = structure_seconds
-            if w_eff > 600:
-                raise ProposalRejected(
-                    f"effective warmup {w_eff}s exceeds the 600s cap")
-            if c_eff > 300:
-                raise ProposalRejected(
-                    f"effective cooldown {c_eff}s exceeds the 300s cap")
-        else:
-            w_eff = warmup_s or 0
-            p_eff = prep_s or 0
-            c_eff = cooldown_s or 0
-        structure = w_eff + p_eff + c_eff
-        total = structure + main_set_seconds
+        total = warm_s + cool_s + main_set_seconds
         if total > total_budget_seconds:
             raise ProposalRejected(
-                f"session total {total}s (warmup {w_eff} + prep "
-                f"{p_eff} + cooldown {c_eff} + main "
-                f"{main_set_seconds}) exceeds budget {total_budget_seconds}s "
-                f"by {total - total_budget_seconds}s"
+                f"session total {total}s (warmup {warm_s} + main "
+                f"{main_set_seconds} + cooldown {cool_s}) exceeds budget "
+                f"{total_budget_seconds}s by {total - total_budget_seconds}s"
             )
         if enforce_floor:
             floor = total_budget_seconds * _BUDGET_FLOOR_FRACTION

@@ -1,6 +1,6 @@
 # Cycling Workout Generator — Project Specification
 
-**Status:** Draft v2.6 — Section 16 rewritten (v0.5.0): power load is Normalized Power with the 30 s rolling average, HR load is HRSS (normalised TRIMP), both as Intervals.icu computes planned workouts; Section 5 gains the athlete settings file (`athlete.yaml`). Previous: v2.5 — Gemini reasoning-layer fork (`cycling-workout-engine-gemini`). Section 9 rewritten for the `google-genai` SDK / `response_schema` architecture, including the two-call research+structure pattern required by the API's grounding/structured-output incompatibility. All other sections (4–8, 10–17) are unchanged from v2.4 — they describe the deterministic core and hard rules, which are provider-agnostic. Previous: v2.4 — (a) Section 6.3/11.4 ramp-RPE examples corrected to the half-open zone-boundary convention: a `45-75%` ramp resolves to `[RPE 1-5]` (75% falls in Tempo), fixing the internal contradiction with the earlier `[RPE 1-4]` examples; (b) Section 16.6 added: hrTSS-type design-time estimate for HR mode; (c) Section 16 hardened in implementation: deterministic work-intensity resolution wired into the pipeline, budget ceiling enforced on effective structure, floor applies to targets only, zone containment (not overlap), rejection feedback on retries, zone-bounded conflict detection without a user IF. Previous: v2.3 (no-KB rule, Section 9.6).
+**Status:** Draft v2.7 — Section 11 rewritten (v0.6.0): warmup and cooldown designed per session by the reasoning layer, a user-requested length adopted exactly, the fixed prep block removed. Previous: v2.6 — Section 16 rewritten (v0.5.0): power load is Normalized Power with the 30 s rolling average, HR load is HRSS (normalised TRIMP), both as Intervals.icu computes planned workouts; Section 5 gains the athlete settings file (`athlete.yaml`). Previous: v2.5 — Gemini reasoning-layer fork (`cycling-workout-engine-gemini`). Section 9 rewritten for the `google-genai` SDK / `response_schema` architecture, including the two-call research+structure pattern required by the API's grounding/structured-output incompatibility. All other sections (4–8, 10–17) are unchanged from v2.4 — they describe the deterministic core and hard rules, which are provider-agnostic. Previous: v2.4 — (a) Section 6.3/11.4 ramp-RPE examples corrected to the half-open zone-boundary convention: a `45-75%` ramp resolves to `[RPE 1-5]` (75% falls in Tempo), fixing the internal contradiction with the earlier `[RPE 1-4]` examples; (b) Section 16.6 added: hrTSS-type design-time estimate for HR mode; (c) Section 16 hardened in implementation: deterministic work-intensity resolution wired into the pipeline, budget ceiling enforced on effective structure, floor applies to targets only, zone containment (not overlap), rejection feedback on retries, zone-bounded conflict detection without a user IF. Previous: v2.3 (no-KB rule, Section 9.6).
 **Governing principle — engine identity:** the engine has no prescribed menu. It is intelligent and equipped to investigate the methodology and physiology of the required training stimuli in depth, and from that foundation create individual sessions and progressions aligned with sound training principles. Reference material (the athlete's initial stimulus matrix, peer-reviewed sources) is *foundation to reason from*, never a lookup table to copy values out of. This is the core distinction from the monotonous generators this project replaces.
 **Governing principle — coaching boundary:** the engine never defaults a training-methodology decision about *when/whether* to apply work (ramp-rate-over-weeks, recovery-week reduction, periodization shape, athlete readiness). Those belong to a separate coach. An incomplete request is flagged, never filled in. Purely mechanical/software decisions (algebraic solving, log schema, config defaults like a lookback window) and physiological generation decisions (work/recovery structure within a session, sampled by reasoning) remain the engine's legitimate territory.
 **Scope:** This document assumes nothing beyond what is written here. Any behavior not explicitly listed should be treated as undefined and raised for clarification before implementation.
@@ -219,87 +219,74 @@ This rule also protects the future-web goal: with no bundled KB, there is no sta
 - The athlete's FTP-for-trainer value is taken at face value with no adjustment. No indoor-vs-outdoor physiological correction is applied.
 - Rest/recovery segments within a workout always carry an explicit %FTP or %LTHR target — never an undefined "easy" or "coast," since there is no coasting on a trainer.
 
-## 11. Mandatory Session Structure
+## 11. Mandatory Session Structure (v2.7)
 
-Every generated session — without exception — has three required parts in this order: **Warmup, Main Set, Cooldown.** The engine never omits any of them and never asks whether they're wanted; they are always present.
+Every generated session — without exception — has three required parts in this order: **Warmup, Main Set, Cooldown.** The engine never omits any of them.
 
-**Warmup and cooldown shape depend on the mode**, because heart rate does not respond instantly the way power does: a continuous HR ramp is not realistically executable, so HR mode uses progressive *steps* (a staircase) that let HR stabilize at each level, rather than a smooth ramp.
+**v2.7 — designed per session, never a template.** Up to v2.6 the warmup was always an ascending ramp plus a fixed 1–2 min block at 45–55% (60–80% LTHR in HR mode), and the cooldown always a descending ramp or one easy block: the same shape for a 30-minute recovery spin and a two-hour VO2max session. Now the reasoning layer designs the warmup and cooldown for the session in hand, gives the reason (`warmup_cooldown_rationale`), and Python validates and renders them like the main set (`engine/sections.py`). The always-present prep block is gone.
 
-### 11.1 Warmup
+### 11.1 What the reasoning layer is asked to do (criteria, not rules)
 
-**The warmup duration is flexible and engine-reasoned, never fixed.** The 10-minute figure is an **upper cap, not a target** — the engine sizes the warmup to the session's time budget. For a short session (e.g. a 30-minute Day-1 progression session) the engine uses a brief warmup (~5 min) so as not to waste valuable training time; for a long session it may use more, never exceeding 10 min. The engine reasons this; there is no fixed rule.
+- Short sessions: a brief warmup (~5 min) and cooldown (2–3 min), so the time goes to the work.
+- Longer and harder sessions: longer warmups and cooldowns; a warmup before hard work may carry short openers.
+- Every element has a reason for its shape.
 
-**Power mode:**
-- Always an **ascending ramp** (low to high — direction is the fixed rule). The `%` start/end values and the duration are **engine-determined** by the session's nature and time budget. Upper cap 10 min.
-- Immediately after the ramp and immediately before the Main Set, always the prep interval `45-55%`. Its duration is **adjustable between 1 and 2 minutes** (engine-reasoned), but the block is **always present** — it is the only block that always appears.
+### 11.2 What Python enforces (sanity and arithmetic only)
 
-**HR mode:**
-- Instead of a ramp, **ascending progressive steps** (a staircase) whose `%` LTHR values and step count are engine-determined to progress toward the main-set zone. Upper cap 10 min for the stepped portion.
-- Immediately before the Main Set, always the prep interval `60-80% LTHR`, duration **adjustable between 1 and 2 minutes** but always present. RPE by the normal flat-segment midpoint rule (70% LTHR → Recovery → `[RPE 1-2]`).
+- A warmup **starts easy** (first value at or below 65% FTP / 80% LTHR) and, in HR mode, **climbs** step by step (heart rate needs each level to settle).
+- A cooldown **stays easy** (nothing above 75% FTP / 89% LTHR — the Endurance tops) and **ends easy** (at or below 65% FTP / 80% LTHR).
+- **Ramps are power-mode only.** Heart rate lags a changing target, so HR mode writes progressions as steps.
+- A sanity length: warmup ≤ 25 min, cooldown ≤ 15 min.
+- **A length the user asked for is adopted exactly** ("calentamiento de 15 minutos" → the warmup adds up to 900 s); it overrides the sanity length. The request reaches the reasoning layer in the prompt, and a proposal that misses it is rejected with the exact reason and retried.
+- The three parts together respect the time budget (Section 15/16).
 
-In both modes, the prep block (`45-55%` power / `60-80% LTHR`) is the **only always-present block in the structure**, and is **additional** to the warmup cap.
+### 11.3 Shape of a section
 
-### 11.2 Main Set
+A section is a list of elements, the same as the main set plus a ramp:
+`step` (duration, low %, high %, optional cadence), `ramp` (duration, from %, to %; power only) and `repeat` (count + steps; never nested).
 
-The generated work, per the requesting zone, structural pattern, and all validation rules (Sections 7, 8, 16).
-
-### 11.3 Cooldown
-
-**Duration is flexible and engine-reasoned; 5 minutes is an upper cap, not a target.** For a short session the engine keeps the cooldown brief so as not to waste training time. The engine chooses the form and `%` values by the session's nature and budget (a structural/mechanical choice, not a training-methodology one).
-
-**Power mode:**
-- Form A — a **descending ramp** (high to low; `%` engine-determined), or
-- Form B — a fixed easy interval at an engine-determined recovery-zone intensity.
-
-**HR mode:**
-- **The fewest steps possible — ideally a single block** (no descending ramp). `%` LTHR engine-determined in a recovery range. Upper limit 5 min.
+The offline generator (no reasoning layer) uses a simple ascending ramp/steps warmup and an easy cooldown: 5 and 3 min up to 45-minute sessions, 10 and 5 beyond, or the lengths the user asked for; its placeholder main set is fitted to the remaining time.
 
 ### 11.4 RPE and output
 
-**RPE:** every line carries its RPE per the derivation rules in Section 6.3 (midpoint method for flat segments — including each HR staircase step — and endpoint-span method for power ramps).
+**RPE:** every line carries its RPE per the derivation rules in Section 6.3 (midpoint method for flat segments and endpoint-span method for ramps).
 
-**All output strictly follows the Section 12.2 grammar — no placeholders, no descriptive bracket notation, no deviation.** The example below is a complete, literally-valid sample of real **power-mode** engine output. **Every numeric value in it is illustrative** — a value the engine would have determined for one particular session — **except the `2m 45-55%` warmup-end block, which is always fixed.** The ramp ranges, main-set content, and cooldown shape shown here are not constants:
-
-```
-# Warmup
-
-- 10m ramp 45-75% [RPE 1-5]
-
-- 2m 45-55% [RPE 1-2]
-
-# Main Set
-
-3x
-- 5m 88-94% [RPE 5-7]
-- 3m 55-65% [RPE 2-3]
-
-# Cooldown
-
-- 5m ramp 75-45% [RPE 1-5]
-```
-
-*(Note: the exact RPE of a ramp depends on its endpoints per Section 6.3; 75% sits on the Endurance/Tempo boundary and falls in Tempo under the half-open convention, hence `[RPE 1-5]`. The values above are illustrative.)*
-
-A corresponding **HR-mode** session uses a progressive staircase warmup (engine-chosen number of steps) and a minimal single-block cooldown, all in `% LTHR`. Illustrative example (every value engine-determined except the fixed `2m 60-80% LTHR` prep block):
+**All output strictly follows the Section 12.2 grammar — no placeholders, no descriptive bracket notation, no deviation.** An illustrative power-mode session (every value is one session's choice, none is fixed):
 
 ```
 # Warmup
 
-- 2m 50-58% LTHR [RPE 1-2]
-- 2m 58-66% LTHR [RPE 1-2]
-- 2m 66-74% LTHR [RPE 1-3]
-- 2m 74-82% LTHR [RPE 2-4]
-- 2m 60-80% LTHR [RPE 1-2]
+- 5m ramp 45-70% [RPE 1-4]
 
 # Main Set
 
 3x
-- 6m 90-94% LTHR [RPE 3-5]
-- 4m 70-80% LTHR [RPE 1-3]
+- 8m 83-87% [RPE 3-5]
+- 2m 55-60% [RPE 2-4]
 
 # Cooldown
 
-- 5m 60-70% LTHR [RPE 1-2]
+- 3m ramp 65-45% [RPE 1-4]
+```
+
+An illustrative HR-mode session (steps only):
+
+```
+# Warmup
+
+- 3m 60-68% LTHR [RPE 1-2]
+- 3m 68-76% LTHR [RPE 1-2]
+- 3m 76-84% LTHR [RPE 2-4]
+
+# Main Set
+
+3x
+- 8m 90-93% LTHR [RPE 3-5]
+- 3m 70-80% LTHR [RPE 1-2]
+
+# Cooldown
+
+- 5m 65-75% LTHR [RPE 1-2]
 ```
 
 ## 12. Output Artifacts & Export Grammar
@@ -379,7 +366,7 @@ When the athlete requests a progression (e.g. "a Tempo progression"), the **driv
 
 ### 15.2 Day-1 sizing example (illustrative, not a rule)
 
-If the athlete has 30 minutes total on Day 1, the engine does **not** spend 10 minutes warming up — that would waste valuable training time in a short session. It might reason ~5 min warmup + ~3 min cooldown, leaving ~22 min, which it could use as (for example) 2×10 min Tempo with 2 min recovery. Every number here is engine-reasoned within the 30-min budget; none is fixed. Warmup/cooldown scale to the budget (Section 11 — their caps are maxima, not targets).
+If the athlete has 30 minutes total on Day 1, the engine does **not** spend 10 minutes warming up — that would waste valuable training time in a short session. It might reason ~5 min warmup + ~3 min cooldown, leaving ~22 min, which it could use as (for example) 2×10 min Tempo with 2 min recovery. Every number here is engine-reasoned within the 30-min budget; none is fixed. Warmup/cooldown scale to the budget (Section 11: designed per session; the sanity lengths are limits, not targets).
 
 ### 15.3 Coherent direction, engine-reasoned
 
@@ -417,7 +404,7 @@ The workouts themselves are not stored in this repository (they are athletes' da
 1. Fix the structure first (rep count, work/rest durations, warmup/cooldown shape) by reasoning from the physiological foundation (Sections 7.1/8) — without reference to TSS/IF at this stage.
 2. Only then solve for the one remaining free variable — the work-segment intensity `x` — so that `NP(session(x)) = NP_target`, where `NP_target = IF_target` or `sqrt(TSS_target / (hours × 100))`.
 
-The rolling window makes NP depend on the order of the segments, so the solve runs on the session exactly as it will be assembled (warmup, prep, main set in order with repeats expanded, cooldown). There is no closed form once the window is in the formula; NP rises monotonically with `x`, so the engine solves by bisection to 10⁻⁷.
+The rolling window makes NP depend on the order of the segments, so the solve runs on the session exactly as it will be assembled (warmup, main set in order with repeats expanded, cooldown). There is no closed form once the window is in the formula; NP rises monotonically with `x`, so the engine solves by bisection to 10⁻⁷.
 
 For structural patterns with more than one distinct work intensity (e.g., over/under), the secondary intensity keeps a fixed ratio to the primary one (the proportions the reasoning layer proposed), so exactly one true degree of freedom remains — never two or more simultaneous unknowns.
 

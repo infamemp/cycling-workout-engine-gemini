@@ -102,11 +102,10 @@
       }
     },
     "segmentRole": {
-      "description": "What role a single step plays. 'rest' segments ALWAYS carry an explicit % target \u2014 never undefined 'easy'/'coast' (spec 10). 'warmup_prep' is the mandatory fixed 2m 45-55% block at warmup end (spec 11).",
+      "description": "What role a single step plays. 'rest' segments ALWAYS carry an explicit % target \u2014 never undefined 'easy'/'coast' (spec 10). Since v0.6.0 (spec 11, v2.7) the warmup and cooldown are designed per session; there is no fixed prep block.",
       "type": "string",
       "enum": [
-        "warmup_ramp",
-        "warmup_prep",
+        "warmup",
         "work",
         "recovery",
         "cooldown"
@@ -464,30 +463,11 @@
           }
         },
         "warmup": {
-          "description": "Mandatory (spec 11). Always an ascending ramp (direction fixed; % engine-determined), followed by the ONE fixed block: 2m 45-55%. Ramp upper limit 10 min; the 2m prep is additional (~12 min total).",
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "ramp",
-            "prep"
-          ],
-          "properties": {
-            "ramp": {
-              "allOf": [
-                {
-                  "$ref": "#/$defs/step"
-                }
-              ],
-              "description": "is_ramp=true, role=warmup_ramp, ascending, duration<=600s."
-            },
-            "prep": {
-              "allOf": [
-                {
-                  "$ref": "#/$defs/step"
-                }
-              ],
-              "description": "The fixed 2m 45-55% block (role=warmup_prep). The only fixed-value block in the structure (spec 11)."
-            }
+          "description": "Mandatory (spec 11, v2.7). Designed per session by the reasoning layer: starts easy and builds; brief (~5 min) in short sessions, longer with duration and intensity; may carry short openers. Power mode may use ramps; HR mode climbing steps only. A user-requested length is used exactly.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sectionElement"
           }
         },
         "main_set": {
@@ -499,7 +479,7 @@
           }
         },
         "cooldown": {
-          "description": "Mandatory (spec 11). Either a descending ramp (Form A) or a fixed easy interval (Form B); engine chooses form AND % by session nature. Upper limit 5 min.",
+          "description": "Mandatory (spec 11, v2.7). Designed per session: easy throughout and ending easy; brief in short sessions, longer after long or hard ones. A user-requested length is used exactly.",
           "type": "array",
           "minItems": 1,
           "items": {

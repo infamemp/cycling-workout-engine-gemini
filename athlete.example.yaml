@@ -4,8 +4,9 @@
 # The workouts are always written in % of threshold; these numbers are used
 # only inside the engine:
 #   - lthr_bpm, max_hr_bpm, resting_hr_bpm: the load (HRSS) of heart-rate
-#     workouts, computed the way Intervals.icu computes it. Without all
-#     three the engine uses a typical profile and marks the load approximate.
+#     workouts, computed the way Intervals.icu computes it. A missing resting
+#     HR takes Intervals.icu's default of 60; without LTHR or max HR the
+#     engine uses a typical profile and marks the load approximate.
 #   - ftp_watts, w_prime_joules: reserved for the CP/W' model (spec 7.2).
 #
 # Use the same values as in your Intervals.icu settings (resting HR changes
