@@ -1,6 +1,6 @@
 """
 models.py — Data structures for requests and generated sessions.
-Mirrors the validated JSON schema (workout_engine_schema.json).
+Mirrors the validated JSON schema (docs/workout_engine_schema.json).
 
 These are plain dataclasses for the deterministic core. The Phase-2 Claude
 layer will populate the creative fields; Phase-1 fills them with a provisional
@@ -126,3 +126,7 @@ class GeneratedSession:
     # How estimated_tss was computed: "np_30s" (power), "hrss" (HR with the
     # athlete's own values) or "hrss_typical" (HR, typical profile: approximate)
     tss_method: str = "np_30s"
+    # Design observations from validation (a step reaching past its zone,
+    # most work outside the requested zone): shown to the athlete, never
+    # blocking.
+    warnings: list = field(default_factory=list)

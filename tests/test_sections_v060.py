@@ -35,10 +35,20 @@ def step(sec, lo, hi):
     return {"element": "step", "duration_seconds": sec, "low_pct": lo, "high_pct": hi}
 
 
+def prep(sec, lo, hi):
+    """The preparation interval every warmup carries (v0.7.0)."""
+    return dict(step(sec, lo, hi), is_preparation=True)
+
+
+def warm_of(total, a=45, b=70):
+    """A valid warmup of `total` seconds: a ramp, then a 60 s preparation."""
+    return [ramp(total - 60, a, b), prep(60, 70, 75)]
+
+
 # --- section checks ---------------------------------------------------------------
 
 def test_short_session_warmup_and_cooldown_pass():
-    assert validate_section("warmup", [ramp(300, 45, 70)], mode="power") == 300
+    assert validate_section("warmup", warm_of(300), mode="power") == 300
     assert validate_section("cooldown", [ramp(150, 65, 45)], mode="power") == 150
 
 
@@ -46,7 +56,7 @@ def test_warmup_with_openers_passes():
     warm = [ramp(480, 45, 75),
             {"element": "repeat", "repeats": 3,
              "steps": [step(30, 110, 120), step(60, 50, 55)]},
-            step(120, 55, 60)]
+            prep(120, 55, 60)]
     assert validate_section("warmup", warm, mode="power") == 480 + 270 + 120
 
 
@@ -70,19 +80,73 @@ def test_hr_warmup_must_climb_and_has_no_ramps():
 
 
 def test_requested_length_is_exact():
-    assert validate_section("warmup", [ramp(900, 45, 75)], mode="power",
+    assert validate_section("warmup", warm_of(900), mode="power",
                             requested_seconds=900) == 900
     with pytest.raises(SectionRejected, match="exactly 900s"):
-        validate_section("warmup", [ramp(600, 45, 75)], mode="power",
+        validate_section("warmup", warm_of(600), mode="power",
                          requested_seconds=900)
 
 
 def test_sanity_limit_unless_requested():
-    long = [ramp(30 * 60, 45, 75)]
+    long = warm_of(30 * 60)
     with pytest.raises(SectionRejected, match="sanity"):
         validate_section("warmup", long, mode="power")
     assert validate_section("warmup", long, mode="power",
                             requested_seconds=30 * 60) == 1800
+
+
+# --- the preparation interval (v0.7.0) ---------------------------------------------
+
+def test_warmup_without_preparation_is_rejected():
+    with pytest.raises(SectionRejected, match="no preparation interval"):
+        validate_section("warmup", [ramp(300, 45, 70)], mode="power")
+
+
+def test_preparation_is_two_minutes_at_most():
+    assert validate_section("warmup", [ramp(240, 45, 65), prep(120, 70, 75)],
+                            mode="power") == 360
+    with pytest.raises(SectionRejected, match="between 30s and 120s"):
+        validate_section("warmup", [ramp(240, 45, 65), prep(121, 70, 75)],
+                         mode="power")
+
+
+def test_preparation_is_short():
+    with pytest.raises(SectionRejected, match="keep it short"):
+        validate_section("warmup", [ramp(300, 45, 65), prep(180, 70, 75)],
+                         mode="power")
+    with pytest.raises(SectionRejected, match="keep it short"):
+        validate_section("warmup", [ramp(300, 45, 65), prep(10, 70, 75)],
+                         mode="power")
+
+
+def test_preparation_cannot_be_the_whole_warmup():
+    with pytest.raises(SectionRejected, match="whole warmup"):
+        validate_section("warmup", [prep(120, 60, 70)], mode="power")
+    # a very short warmup may be only the preparation
+    assert validate_section("warmup", [prep(90, 60, 70)], mode="power") == 90
+
+
+def test_preparation_may_be_a_ramp_and_belongs_to_the_warmup_only():
+    warm = [ramp(240, 45, 65), dict(ramp(90, 65, 80), is_preparation=True)]
+    assert validate_section("warmup", warm, mode="power") == 330
+    with pytest.raises(SectionRejected, match="warmup only"):
+        validate_section("cooldown", [dict(ramp(180, 65, 45),
+                                           is_preparation=True)], mode="power")
+
+
+def test_hr_warmup_preparation_is_the_last_step_of_the_staircase():
+    warm = [step(180, 60, 68), step(180, 68, 76), prep(90, 76, 84)]
+    assert validate_section("warmup", warm, mode="hr") == 450
+
+
+def test_offline_defaults_carry_a_preparation():
+    for mode in ("power", "hr"):
+        for total in (1200, 1800, 3600, 7200):
+            warm, cool = sections.default_sections(mode, total)
+            validate_section("warmup", warm, mode=mode)
+            validate_section("cooldown", cool, mode=mode)
+        warm, _ = sections.default_sections(mode, 3600, warmup_seconds=75)
+        assert validate_section("warmup", warm, mode=mode) == 75
 
 
 def test_unknown_field_in_section_rejected():
@@ -108,12 +172,13 @@ def _proposal(warm, cool):
 
 
 def test_designed_sections_are_rendered_as_proposed():
-    prop = _proposal([ramp(300, 45, 70)], [step(150, 50, 55)])
+    prop = _proposal([ramp(240, 45, 65), prep(60, 70, 75)], [step(150, 50, 55)])
     sess = generate_single_v2(
         GenerationRequest(kind="single_session", mode="power", requested_zone="Tempo"),
         transport=lambda *a: prop)
     md = sess.markdown_output
-    assert "- 5m ramp 45-70%" in md.split("# Main Set")[0]
+    assert "- 4m ramp 45-65%" in md.split("# Main Set")[0]
+    assert "- 1m 70-75%" in md.split("# Main Set")[0]      # the preparation
     assert "- 2m30s 50-55%" in md.split("# Cooldown")[1]
     assert "45-55%" not in md.split("# Main Set")[0]   # no fixed prep block
 
@@ -125,7 +190,7 @@ def test_user_requested_warmup_is_enforced_and_fed_back():
         calls.append(user)
         # First answer ignores the request, second follows it.
         w = 300 if len(calls) == 1 else 900
-        return _proposal([ramp(w, 45, 75)], [ramp(180, 65, 45)])
+        return _proposal(warm_of(w, 45, 75), [ramp(180, 65, 45)])
 
     req = GenerationRequest(kind="single_session", mode="power",
                             requested_zone="Tempo", warmup_seconds=900)

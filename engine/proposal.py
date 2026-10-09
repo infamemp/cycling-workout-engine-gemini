@@ -16,9 +16,30 @@ Division of responsibility (confirmed):
 """
 
 from __future__ import annotations
+import copy
 from .zones import zones_for_mode, zone_by_name
 from .sections import SECTION_SCHEMA, validate_section, SectionRejected
 
+# v0.7.0 — flexibility. The validator splits what it finds in two:
+#   - REJECTIONS protect against errors: unknown zone systems, impossible
+#     numbers, a session longer than its budget, a user-fixed duration not
+#     met, a warmup without its preparation interval, "recovery" that is not
+#     easy, and a requested zone that does not appear at all.
+#   - WARNINGS describe design choices and never block them: a step that
+#     reaches past its zone, most work time sitting outside the requested
+#     zone. They are returned (and shown to the athlete) so the coach can
+#     see them, as Infame does with its purpose check.
+
+
+_LEAF_PROPS = {
+    "duration_seconds": {"type": "integer", "minimum": 1},
+    "low_pct": {"type": "integer", "minimum": 0},
+    "high_pct": {"type": "integer", "minimum": 0},
+    "zone_name": {"type": "string"},
+    "is_recovery": {"type": "boolean"},
+    "cadence_low": {"type": "integer"},
+    "cadence_high": {"type": "integer"},
+}
 
 # --- The tool schema Claude must fill (passed to the API as a tool) ----------
 # Claude returns ONLY structural intent; Python turns it into validated output.
@@ -29,10 +50,12 @@ PROPOSAL_TOOL_SCHEMA = {
         "Propose the STRUCTURE of one indoor cycling workout: its warmup, "
         "main set and cooldown. "
         "Return structural intent only — do NOT compute TSS/IF and do NOT "
-        "write intervals.icu syntax; the engine does that. Respect the "
-        "requested zone as the dominant stimulus; any complementary stimuli "
-        "must be subordinate (less time-in-zone). All intensities are integer "
-        "percent ranges within the mode's zone system."
+        "write intervals.icu syntax; the engine does that. The requested "
+        "zone is the session's purpose and must appear in the main set; how "
+        "the work is shaped around it (steady, intervals, touches, builds, "
+        "surges, ladders) is your design. All intensities are integer "
+        "percent ranges in the mode's zone system; a step may reach past its "
+        "zone when the design calls for it."
     ),
     "input_schema": {
         "type": "object",
@@ -48,7 +71,8 @@ PROPOSAL_TOOL_SCHEMA = {
                 "type": "array",
                 "minItems": 1,
                 "description": "Ordered elements: each is a single step or a "
-                               "repeat block (Nx). Repeat blocks are NOT nested.",
+                               "repeat block (Nx). A block may hold one "
+                               "level of sub-repeat.",
                 "items": {
                     "type": "object",
                     
@@ -70,18 +94,29 @@ PROPOSAL_TOOL_SCHEMA = {
                         "steps": {
                             "type": "array",
                             "minItems": 1,
+                            "description": "Steps of the block. An item with "
+                            "element=repeat is a sub-repeat (one level): "
+                            "the engine unrolls it into the block, because "
+                            "the platform has no nested repeats.",
                             "items": {
                                 "type": "object",
-                                
-                                "required": ["duration_seconds", "low_pct", "high_pct", "zone_name"],
+                                "required": ["element"],
                                 "properties": {
-                                    "duration_seconds": {"type": "integer", "minimum": 1},
-                                    "low_pct": {"type": "integer", "minimum": 0},
-                                    "high_pct": {"type": "integer", "minimum": 0},
-                                    "zone_name": {"type": "string"},
-                                    "is_recovery": {"type": "boolean"},
-                                    "cadence_low": {"type": "integer"},
-                                    "cadence_high": {"type": "integer"},
+                                    "element": {"type": "string",
+                                                "enum": ["step", "repeat"]},
+                                    **_LEAF_PROPS,
+                                    "repeats": {"type": "integer",
+                                                "minimum": 1},
+                                    "steps": {
+                                        "type": "array", "minItems": 1,
+                                        "items": {
+                                            "type": "object",
+                                            "required": ["duration_seconds",
+                                                         "low_pct", "high_pct",
+                                                         "zone_name"],
+                                            "properties": dict(_LEAF_PROPS),
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -104,9 +139,11 @@ PROPOSAL_TOOL_SCHEMA = {
             "warmup": dict(SECTION_SCHEMA, description=(
                 "The warmup, designed for THIS session (not a template): "
                 "start easy and build; brief (~5 min) in short sessions, "
-                "longer as duration and intensity grow; short openers "
-                "before hard work are fine. Power mode may use ramps; "
-                "HR mode uses climbing steps only.")),
+                "longer as duration and intensity grow. It ALWAYS includes "
+                "a short preparation interval (30 s - 2 min, "
+                "is_preparation=true) that readies the body for the main "
+                "block. Power mode may use ramps; HR mode uses climbing "
+                "steps only.")),
             "cooldown": dict(SECTION_SCHEMA, description=(
                 "The cooldown, designed for THIS session: easy all the way "
                 "and ending easy; brief (2-3 min) in short sessions, longer "
@@ -124,7 +161,15 @@ PROPOSAL_TOOL_SCHEMA = {
 # --- Validation of a returned proposal (spec 9: validate before accept) ------
 
 class ProposalRejected(ValueError):
-    """A Claude proposal violated a hard rule. Discard and re-request."""
+    """A Claude proposal broke a rule that protects against errors. Discard
+    and re-request, passing the reason back."""
+
+
+# Outer limits of a believable target, % of FTP (power) or % of LTHR (HR).
+# Far beyond any real session; they catch typos (900%), not designs.
+SANITY_MAX_PCT = {"power": 400, "hr": 120}
+RECOVERY_CEILING_PCT = 85       # a step called recovery must be easy
+MAX_UNROLLED_STEPS = 80         # a block longer than this is not a workout
 
 
 def _zone_names(mode: str) -> set[str]:
@@ -144,47 +189,109 @@ def _require_step_fields(step: dict) -> None:
             f"step duration_seconds must be positive: {step!r}")
 
 
-def _check_step(mode: str, step: dict, valid_zones: set[str], dominant: str) -> None:
+def _check_step(mode: str, step: dict, valid_zones: set[str], dominant: str,
+                warnings: list[str]) -> None:
+    """Errors raise; design observations go to `warnings`."""
     _require_step_fields(step)
     lo, hi = step["low_pct"], step["high_pct"]
     if lo > hi:
         raise ProposalRejected(f"step low_pct {lo} > high_pct {hi}")
     if lo < 0 or hi < 0:
         raise ProposalRejected("percent values must be non-negative")
+    if hi > SANITY_MAX_PCT[mode]:
+        raise ProposalRejected(
+            f"intensity {lo}-{hi}% is beyond any believable target "
+            f"(limit {SANITY_MAX_PCT[mode]}% in {mode} mode)")
 
-    # Recovery segments are "whatever is easy enough" — they are NOT required to
-    # sit exactly within a named zone's bounds (a recovery may straddle the
-    # Recovery/Aerobic boundary, etc.). Only sanity-check they are genuinely
-    # easy, not accidentally hard. m3: the WHOLE range must be easy — checking
-    # only the low end let an "easy" 80-90% slip through.
-    if step.get("is_recovery"):
-        # An easy recovery should not exceed roughly endurance/aerobic intensity.
-        ceiling = 85
-        if hi > ceiling:
-            raise ProposalRejected(
-                f"recovery intensity {lo}-{hi}% too hard "
-                f"(upper end exceeds {ceiling}%)"
-            )
-        return
-
-    # Work segments (A1): zone name must be valid and the intensity range must
-    # be CONTAINED within that zone's bounds (boundary-inclusive: 75-90% IS a
-    # valid Tempo range, exactly as Friel writes the zone). Mere overlap is
-    # not enough — a 75-105% "Tempo" interval spans three zones and would
-    # falsify the session's declared stimulus.
     zname = step.get("zone_name", dominant)
     if zname not in valid_zones:
         raise ProposalRejected(
-            f"zone {zname!r} not valid in {mode} system (cross-mode mixing forbidden)"
-        )
+            f"zone {zname!r} not valid in {mode} system (cross-mode mixing "
+            f"forbidden)")
+
+    # A step called recovery has to be easy (the whole range).
+    if step.get("is_recovery"):
+        if hi > RECOVERY_CEILING_PCT:
+            raise ProposalRejected(
+                f"recovery intensity {lo}-{hi}% too hard "
+                f"(upper end exceeds {RECOVERY_CEILING_PCT}%)")
+        return
+
+    # A work step may reach past its zone: a progressive effort, a surge, a
+    # step that builds from Tempo into Threshold. Not an error — noted.
     z = zone_by_name(mode, zname)
-    hi_repr = z.high_pct if z.high_pct is not None else "open"
     if lo < z.low_pct or (z.high_pct is not None and hi > z.high_pct):
-        raise ProposalRejected(
-            f"intensity {lo}-{hi}% not contained within zone {zname} bounds "
-            f"[{z.low_pct}-{hi_repr}%] — work intensities must sit within "
-            f"their named zone"
-        )
+        top = z.high_pct if z.high_pct is not None else "open"
+        warnings.append(
+            f"a {zname} step runs {lo}-{hi}%, past the zone's "
+            f"{z.low_pct}-{top}% (a design choice, noted)")
+
+
+# Nested repeats. The platform has no nested repeats, so the schema lets a
+# block carry ONE level of sub-repeat and the engine unrolls it: a block
+# 4 x [5 x (30s on / 30s off), 4 min easy] is written as 4 x [10 short steps,
+# 4 min easy]. Nothing is lost; the athlete sees a flat block.
+_LEAF_KEYS = set(_LEAF_PROPS)
+
+
+def _unroll_sub_repeat(st: dict, where: str) -> list[dict]:
+    reps = st.get("repeats")
+    if isinstance(reps, bool) or not isinstance(reps, int) or reps < 1:
+        raise ProposalRejected(f"{where}: sub-repeat has invalid 'repeats' "
+                               f"{reps!r}")
+    inner = st.get("steps")
+    if not isinstance(inner, list) or not inner:
+        raise ProposalRejected(f"{where}: sub-repeat needs 'steps'")
+    leaves = []
+    for k, leaf in enumerate(inner):
+        if not isinstance(leaf, dict):
+            raise ProposalRejected(f"{where}: sub-repeat step {k} is not an "
+                                   f"object")
+        if (leaf.get("element") == "repeat" or "repeats" in leaf
+                or "steps" in leaf):
+            raise ProposalRejected(
+                f"{where}: nested more than one level — a sub-repeat cannot "
+                f"hold another repeat")
+        bad = set(leaf) - _LEAF_KEYS - {"element"}
+        if bad:
+            raise ProposalRejected(
+                f"{where}: unknown field(s) {sorted(bad)} in sub-repeat "
+                f"step {k}")
+        leaf = {k2: v for k2, v in leaf.items() if k2 != "element"}
+        leaves.append(leaf)
+    return [copy.deepcopy(l) for _ in range(reps) for l in leaves]
+
+
+def flatten_nested_repeats(proposal: dict) -> dict:
+    """Return a copy of the proposal with every sub-repeat unrolled into its
+    block (one level of nesting allowed; deeper is rejected). A proposal
+    without sub-repeats comes back unchanged apart from the copy."""
+    out = copy.deepcopy(proposal)
+    for i, el in enumerate(out.get("main_set") or []):
+        if not isinstance(el, dict) or el.get("element") != "repeat":
+            continue
+        flat: list[dict] = []
+        for j, st in enumerate(el.get("steps") or []):
+            where = f"main_set element {i} step {j}"
+            if not isinstance(st, dict):
+                raise ProposalRejected(f"{where} is not an object")
+            kind = st.get("element", "step")
+            if kind == "repeat":
+                flat.extend(_unroll_sub_repeat(st, where))
+            elif kind == "step":
+                if "repeats" in st or "steps" in st:
+                    raise ProposalRejected(
+                        f"{where}: a step must not carry repeat fields — "
+                        f"use element=repeat for a sub-repeat")
+                flat.append({k: v for k, v in st.items() if k != "element"})
+            else:
+                raise ProposalRejected(f"{where}: unknown element {kind!r}")
+        if len(flat) > MAX_UNROLLED_STEPS:
+            raise ProposalRejected(
+                f"main_set element {i} unrolls to {len(flat)} steps — too "
+                f"long for one block (limit {MAX_UNROLLED_STEPS})")
+        el["steps"] = flat
+    return out
 
 
 # Unknown fields (v0.4.1). Gemini's response_schema does not carry
@@ -215,9 +322,7 @@ def _check_unknown_fields(proposal: dict) -> None:
             raise ProposalRejected(
                 f"unknown field(s) {sorted(extra)} in main_set element {i}")
         for j, st in enumerate(el.get("steps") or []):
-            # An inner item carrying "element" is a nested repeat: leave it
-            # to the nested-repeat check, which names the real problem.
-            if isinstance(st, dict) and "element" not in st:
+            if isinstance(st, dict):
                 extra = set(st) - _INNER_STEP_KEYS
                 if extra:
                     raise ProposalRejected(
@@ -225,49 +330,64 @@ def _check_unknown_fields(proposal: dict) -> None:
                         f"main_set element {i}")
 
 
-def _collect_used_zones(main_set: list, dominant_zone: str) -> set[str]:
-    """Collect all non-dominant, non-recovery zone names actually used across
-    main_set (steps and repeat-block inner steps), for the metadata-honesty
-    check in validate_proposal."""
-    used: set[str] = set()
-    for el in main_set:
-        if el.get("element") == "step":
-            if not el.get("is_recovery"):
-                z = el.get("zone_name", dominant_zone)
-                if z != dominant_zone:
-                    used.add(z)
-        elif el.get("element") == "repeat":
-            for st in el.get("steps", []):
-                if not st.get("is_recovery"):
-                    z = st.get("zone_name", dominant_zone)
-                    if z != dominant_zone:
-                        used.add(z)
-    return used
+def main_zone_seconds(proposal: dict, dominant_zone: str) -> dict[str, int]:
+    """Work seconds per zone name in the main set (recovery steps left out,
+    repeats expanded). Works on a flat (unrolled) proposal."""
+    out: dict[str, int] = {}
+    for el in proposal.get("main_set") or []:
+        if el.get("element") == "repeat":
+            reps = el.get("repeats", 1)
+            steps = [(st, reps) for st in el.get("steps") or []]
+        else:
+            steps = [(el, 1)]
+        for st, n in steps:
+            if st.get("is_recovery"):
+                continue
+            z = st.get("zone_name", dominant_zone)
+            out[z] = out.get(z, 0) + int(st.get("duration_seconds", 0)) * n
+    return out
+
+
+def derive_complementary_zones(proposal: dict, dominant_zone: str) -> list[str]:
+    """The other zones the main set really works in, derived from what was
+    built (v0.7.0: the engine reports them; the proposal no longer has to
+    declare them correctly), plus any zone the proposal declared."""
+    declared = {c.get("zone") for c in proposal.get("complementary_stimuli", [])
+                if isinstance(c, dict) and c.get("zone")}
+    used = set(main_zone_seconds(proposal, dominant_zone)) - {dominant_zone}
+    return sorted((declared | used) - {dominant_zone})
 
 
 def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
                       total_budget_seconds: int | None = None,
                       enforce_floor: bool = True,
                       requested_warmup_seconds: int | None = None,
-                      requested_cooldown_seconds: int | None = None) -> None:
-    """Validate a Claude proposal against the hard rules. Raises
-    ProposalRejected on the first violation; returns None if acceptable.
+                      requested_cooldown_seconds: int | None = None
+                      ) -> list[str]:
+    """Validate a proposal. Raises ProposalRejected on the first ERROR and
+    returns a list of WARNINGS (design observations, never blocking).
 
-    Hard rules enforced here (spec 4, 8, 11, 12, 17):
-      - all zone names valid in the chosen mode (no cross-mode mixing)
-      - work intensities within their named zone bounds
-      - no nested repeats
-      - dominant stimulus must actually dominate (most work time-in-zone)
-      - warmup and cooldown designed per session but sane (sections.py):
-        start easy / end easy, HR steps only, a user-requested length exact
-      - if a total budget is given: warmup+main_set+cooldown <= budget
-        (pure arithmetic conservation of the total, NOT a training rule)
+    Errors (they protect against mistakes, not against creativity):
+      - zone names valid in the chosen mode (no cross-mode mixing)
+      - impossible numbers; a step called recovery that is not easy
+      - nesting deeper than one level
+      - the requested zone does not appear in the main set at all
+      - warmup and cooldown sane (sections.py): start easy / end easy, HR
+        steps only, a preparation interval in the warmup, a user-requested
+        length exact
+      - warmup + main set + cooldown within the budget; a TARGET duration
+        not missed by a wide margin
+
+    Warnings: a step reaching past its zone; most work time outside the
+    requested zone.
     """
     valid = _zone_names(mode)
     if dominant_zone not in valid:
         raise ProposalRejected(f"dominant zone {dominant_zone!r} invalid for {mode}")
 
     _check_unknown_fields(proposal)
+    proposal = flatten_nested_repeats(proposal)
+    warnings: list[str] = []
 
     if not proposal.get("main_set"):
         raise ProposalRejected("main_set is empty")
@@ -281,24 +401,17 @@ def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
     except SectionRejected as e:
         raise ProposalRejected(str(e))
 
-    dominant_work = 0
-    other_work = 0
     main_set_seconds = 0
+    zones_named: set[str] = set()
 
     for el in proposal["main_set"]:
         kind = el.get("element")
         if kind == "step":
             if "steps" in el or "repeats" in el:
                 raise ProposalRejected("step element must not carry repeat fields")
-            _check_step(mode, el, valid, dominant_zone)
+            _check_step(mode, el, valid, dominant_zone, warnings)
             main_set_seconds += el["duration_seconds"]
-            if not el.get("is_recovery"):
-                z = el.get("zone_name", dominant_zone)
-                t = el["duration_seconds"]
-                if z == dominant_zone:
-                    dominant_work += t
-                else:
-                    other_work += t
+            zones_named.add(el.get("zone_name", dominant_zone))
         elif kind == "repeat":
             inner = el.get("steps")
             if not inner:
@@ -309,56 +422,40 @@ def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
                     f"repeat element missing or invalid 'repeats': {reps!r}")
             block_seconds = 0
             for st in inner:
-                if "element" in st:
-                    raise ProposalRejected("nested repeats are forbidden")
-                _check_step(mode, st, valid, dominant_zone)
+                _check_step(mode, st, valid, dominant_zone, warnings)
                 block_seconds += st["duration_seconds"]
-                if not st.get("is_recovery"):
-                    z = st.get("zone_name", dominant_zone)
-                    t = st["duration_seconds"] * reps
-                    if z == dominant_zone:
-                        dominant_work += t
-                    else:
-                        other_work += t
+                zones_named.add(st.get("zone_name", dominant_zone))
             main_set_seconds += block_seconds * reps
         else:
             raise ProposalRejected(f"unknown element kind {kind!r}")
 
-    # Dominant/subordinate boundary (spec 17): requested zone must dominate.
-    if dominant_work <= 0:
-        raise ProposalRejected("no work in the dominant (requested) zone")
+    # --- Purpose (v0.7.0). The requested zone is the session's purpose: it
+    # has to be in the session. How much of the work time it takes is the
+    # coach's design (touches, surges, progressions, a build through zones),
+    # so a different split is a warning, not a rejection.
+    if dominant_zone not in zones_named:
+        raise ProposalRejected(
+            f"the requested zone {dominant_zone} does not appear in the main "
+            f"set — the session has to work in the zone that was asked for")
+    secs = main_zone_seconds(proposal, dominant_zone)
+    dominant_work = secs.get(dominant_zone, 0)
+    other_work = sum(v for k, v in secs.items() if k != dominant_zone)
     if other_work > dominant_work:
-        raise ProposalRejected(
-            f"complementary work ({other_work}s) exceeds dominant "
-            f"({dominant_work}s) — requested stimulus must dominate"
-        )
-
-    # Metadata honesty: any non-dominant, non-recovery zone actually used in
-    # main_set must be declared in complementary_stimuli, so the reported
-    # complementary_zones on the session accurately reflects what was built.
-    declared = {c["zone"] for c in proposal.get("complementary_stimuli", [])}
-    used_other_zones = _collect_used_zones(proposal["main_set"], dominant_zone)
-    undeclared = used_other_zones - declared
-    if undeclared:
-        raise ProposalRejected(
-            f"zones {sorted(undeclared)} are used in main_set but not "
-            f"declared in complementary_stimuli — metadata must match what "
-            f"was actually built"
-        )
+        biggest = max((k for k in secs if k != dominant_zone),
+                      key=lambda k: secs[k])
+        warnings.append(
+            f"most of the work time ({other_work // 60} min) sits outside "
+            f"{dominant_zone}, mainly in {biggest}; the session reads as "
+            f"{biggest} work with {dominant_zone} in it — say so in the "
+            f"summary")
+    warnings = list(dict.fromkeys(warnings))
 
     # --- Budget conservation (pure arithmetic, spec 15) ---
-    # Decision: the engine gets maximum flexibility to reason the structure
-    # (spec 3/9.6) — the ceiling (never exceed the budget) is a hard rule, but
-    # the floor is deliberately LOOSE. A minor shortfall (e.g. 58 min of a
-    # 60-min request) is fine and left to the athlete to fill manually if they
-    # want (a bit more warmup, one extra rep) — forcing an exact minute match
-    # would push the engine toward padding structure just to hit a number,
-    # which is exactly the rigidity this project avoids. Only a genuinely
-    # considerable shortfall is caught.
-    #
-    # `enforce_floor` distinguishes a TARGET duration (floor + ceiling) from
-    # a MAXIMUM (ceiling only). Filling more of the athlete's available time
-    # is a coaching decision, never the engine's to force.
+    # The ceiling (never exceed the budget) is hard. The floor is deliberately
+    # LOOSE: a minor shortfall (58 of 60 min) is fine; only a considerable
+    # one is caught. `enforce_floor` distinguishes a TARGET duration (floor +
+    # ceiling) from a MAXIMUM (ceiling only): filling more of the athlete's
+    # available time is a coaching decision, never the engine's to force.
     _BUDGET_FLOOR_FRACTION = 0.80  # allow up to 20% under budget with no rejection
     if total_budget_seconds is not None:
         total = warm_s + cool_s + main_set_seconds
@@ -377,6 +474,7 @@ def validate_proposal(proposal: dict, *, mode: str, dominant_zone: str,
                     f"floor) — minor shortfalls are fine, but this gap is too "
                     f"large; use more of the available time"
                 )
+    return warnings
 
 
 # --- TSS/IF target verification (spec 16.3 — report, never silently accept) --

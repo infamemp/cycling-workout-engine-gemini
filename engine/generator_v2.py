@@ -24,7 +24,8 @@ from . import tss as tssmod
 from .catalog import Catalog, CatalogEntry
 from .gemini_client import Transport, request_proposal
 from .proposal import (validate_proposal, verify_tss_target, verify_if_target,
-                       ProposalRejected)
+                       ProposalRejected, flatten_nested_repeats,
+                       derive_complementary_zones)
 from .build_from_proposal import build_main_set
 from .sections import build_section, section_segments, section_seconds
 from .resolve_intensity import (resolve_proposal_intensity, IntensityInfeasible)
@@ -61,6 +62,7 @@ def generate_single_v2(req: GenerationRequest, *,
     proposal: Optional[dict] = None
     warmup = cooldown = main_set = None
     markdown = None
+    warnings: list[str] = []
     est_tss = est_if = None
     tss_method = "np_30s"
 
@@ -102,10 +104,13 @@ def generate_single_v2(req: GenerationRequest, *,
             cooldown_seconds=req.cooldown_seconds,
         )
         try:
+            # One level of sub-repeat is allowed; the platform has no nested
+            # repeats, so it is unrolled into its block first.
+            candidate = flatten_nested_repeats(candidate)
             # Warmup and cooldown are designed per session by the reasoning
             # layer (spec 11, v2.7) and validated with the rest; a length the
             # user asked for must be met exactly.
-            validate_proposal(candidate, mode=req.mode,
+            warnings = validate_proposal(candidate, mode=req.mode,
                               dominant_zone=req.requested_zone,
                               total_budget_seconds=budget,
                               enforce_floor=floor_applies,
@@ -170,7 +175,7 @@ def generate_single_v2(req: GenerationRequest, *,
 
     sid = str(uuid.uuid4())[:8]
     summary = proposal.get("summary", f"{req.requested_zone} session")
-    complementary = [c["zone"] for c in proposal.get("complementary_stimuli", [])]
+    complementary = derive_complementary_zones(proposal, req.requested_zone)
 
     session = GeneratedSession(
         id=sid, generated_at=CatalogEntry.now_iso(), mode=req.mode,
@@ -183,6 +188,7 @@ def generate_single_v2(req: GenerationRequest, *,
         summary=summary, markdown_output=markdown,
         progression_id=progression_id,
         tss_method=tss_method,
+        warnings=list(warnings),
     )
 
     if catalog is not None:

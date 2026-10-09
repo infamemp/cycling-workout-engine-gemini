@@ -1,6 +1,6 @@
 """cycling-workout-engine — an intelligent indoor cycling workout generator.
 
-See the project README and cycling_workout_generator_specification.md for
+See the project README and docs/specification.md for
 the full design and architecture.
 """
 

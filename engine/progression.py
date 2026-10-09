@@ -63,25 +63,30 @@ def validate_progression(progression: dict, *, mode: str,
                          session_budgets: list[int | None] | None = None,
                          session_floor_flags: list[bool] | None = None,
                          requested_warmup_seconds: int | None = None,
-                         requested_cooldown_seconds: int | None = None) -> None:
+                         requested_cooldown_seconds: int | None = None
+                         ) -> list[list[str]]:
     """Validate every session in the progression against the same hard rules
     as a single session, including per-session budget conservation (spec 15).
     `session_budgets`, if given, is a list the same length as `sessions`,
     each entry the time budget (seconds) that session must fit within
     (None = no budget check for that session). `session_floor_flags` marks which budgets are TARGETS (floor
-    applies — e.g. Day 1) vs pure MAXIMA (ceiling only — A3)."""
+    applies — e.g. Day 1) vs pure MAXIMA (ceiling only — A3).
+    Returns each session's warnings (design observations, never blocking)."""
     sessions = progression.get("sessions")
     if not sessions:
         raise ProposalRejected("progression has no sessions")
+    all_warnings: list[list[str]] = []
     for i, sess in enumerate(sessions):
         budget = session_budgets[i] if session_budgets and i < len(session_budgets) else None
         floor = (session_floor_flags[i]
                  if session_floor_flags and i < len(session_floor_flags) else True)
         try:
-            validate_proposal(sess, mode=mode, dominant_zone=dominant_zone,
+            all_warnings.append(validate_proposal(
+                              sess, mode=mode, dominant_zone=dominant_zone,
                               total_budget_seconds=budget,
                               enforce_floor=floor,
                               requested_warmup_seconds=requested_warmup_seconds,
-                              requested_cooldown_seconds=requested_cooldown_seconds)
+                              requested_cooldown_seconds=requested_cooldown_seconds))
         except ProposalRejected as e:
             raise ProposalRejected(f"session {i+1} invalid: {e}")
+    return all_warnings

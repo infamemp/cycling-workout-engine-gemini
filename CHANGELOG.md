@@ -1,8 +1,8 @@
 # Cycling Workout Generator — CHANGELOG & Restore Point
 ## (Gemini fork: `cycling-workout-engine-gemini`)
 
-**Restore point date:** 2026-10-08 (v0.6.0 designed warmup and cooldown)
-**Status:** Specification v2.7 · Engine v0.6.0 · 138 tests passing
+**Restore point date:** 2026-10-09 (v0.8.0 tidy repository, workouts filed by intention)
+**Status:** Specification v2.9 · Engine v0.8.0 · 191 tests passing
 
 This CHANGELOG carries forward the full history of the original
 `cycling-workout-engine` (Claude reasoning layer) up to v0.3.0/spec v2.4,
@@ -11,6 +11,105 @@ then continues independently from here for this fork. Entries before
 architecture accurately as of when they were written — they are historical
 record, not a description of this repo's current behavior. See `README.md`
 for the current (Gemini) architecture.
+
+---
+
+## v0.8.0 — Tidy repository, workouts filed by intention (2026-10-09)
+
+### Why
+Every generated workout was written to the repository root as
+`workout_XXXXXXXX.md` (progressions as `progression_*` folders, the catalog as
+`my_catalog.sqlite`), mixed in with the source and the documents. After a few
+weeks the root was unusable.
+
+### What changed
+- **`workouts/` holds everything generated**, in a subfolder per intention:
+  `recovery`, `endurance`, `tempo`, `sub_threshold` (sweet spot and HR
+  SubThreshold), `threshold`, `vo2max`, `anaerobic`, `neuromuscular`. The
+  intention comes from the requested zone (`engine/storage.py`, the same
+  classes the shape library uses). Folders are created on first use.
+- **Descriptive file names:** `2026-10-09_power_tempo_45min_382774b5.md`
+  (date, mode, zone, total minutes, id). A progression gets its own folder,
+  `<date>_<mode>_<zone>_progression_<id>/`, with `session_01.md`, `session_02.md`...
+- **The catalog moved to `workouts/catalog.sqlite`.** An existing
+  `my_catalog.sqlite` in the repository root is moved there the first time, so
+  the engine keeps its memory.
+- Anchored to the repository folder, so it no longer matters where the command
+  is run from. `WORKOUT_ENGINE_WORKOUTS` keeps the workouts somewhere else.
+- **`.gitignore`:** `workouts/*` is ignored except `workouts/README.md`. The
+  old root patterns stay for leftovers.
+- **Repository root cleaned:** `QUICKSTART.md`, the specification
+  (`docs/specification.md`) and the schema (`docs/workout_engine_schema.json`)
+  moved into `docs/`. The root now holds `README.md`, `CHANGELOG.md`, `VERSION`,
+  `requirements.txt`, `athlete.example.yaml`, `pedir.py` and the folders
+  `docs/`, `engine/`, `tests/`, `workouts/`. A test keeps it that way.
+- **Preparation interval capped at 2 minutes** (was 5): 30 s to 2 min. Applies
+  to the validator, the schema, the prompt and the offline warmups.
+- Tests: 180 -> 191 (`tests/test_storage_v080.py`).
+
+---
+
+## v0.7.0 — Flexibility and creativity in session design (2026-10-09)
+
+### Why
+Several rules caged the reasoning layer into the most obvious session for the
+requested zone: a work step had to sit entirely inside its zone, the requested
+zone had to hold more work time than everything else combined, every zone used
+had to be declared by hand, repeat blocks could not nest, and the prompt called
+all of it "hard rules". The same lesson the Infame coaching system learned
+(v7.35-v7.37): a session is defined by its purpose, and the way the work is
+arranged around that purpose is the coach's design. This applies to every kind
+of session: recovery, activation, aerobic, tempo, sweet spot, threshold, VO2max,
+anaerobic and neuromuscular.
+
+### What changed
+- **The validator blocks errors, not designs.** Still rejected (and sent back
+  to Gemini with the exact reason): a zone from the other system, impossible
+  numbers (over 400% FTP / 120% LTHR), a step called recovery that is not easy
+  (above 85%), a requested zone that never appears in the main set, a session
+  longer than its budget, a target duration missed by more than 20%, a
+  user-fixed warmup/cooldown length not met, a warmup that starts hard or lacks
+  its preparation, a cooldown that is not easy. No longer rejected, now notes
+  returned by `validate_proposal` and shown to the athlete as "Design notes":
+  a work step that reaches past its zone, and most of the work time sitting
+  outside the requested zone.
+- **Complementary zones are derived by the engine** from what was built. The
+  proposal no longer has to declare them correctly to be accepted.
+- **One level of sub-repeat.** A repeat block may hold a sub-repeat, for example
+  `4 x [5 x (30 s on / 30 s off), 4 min easy]`. The platform has no nested
+  repeats, so `flatten_nested_repeats` unrolls the inner one into its block
+  before anything is validated or built; deeper nesting and blocks over 80 steps
+  are rejected.
+- **Preparation interval, always.** Every warmup carries a short step or ramp
+  (30 s to 5 min, `is_preparation: true`) that readies the body for the main
+  block; it cannot be the whole warmup (from 2 min up). What it is stays the
+  coach's design. The offline generator's warmups carry one too.
+- **Shape library** (`engine/data/shapes.yaml`, `engine/shapes.py`): 20 ways to
+  arrange the work (steady aerobic, aerobic touches, rolling, progressive
+  blocks, intervals, ladders, pyramids, stepped builds, hard-start, over-unders,
+  surges on a base, climb simulation, ramps, sprints, cadence contrast,
+  activation openers, technique drills) and four ways they chain. Offered in
+  the prompt as ideas: no default, no quota, no check that one was used, free
+  to combine or to invent. No intensities. Ramp shapes are left out of HR mode.
+  `WORKOUT_ENGINE_SHAPES=off` removes the library from the prompt. This is a
+  deliberate, narrow amendment of spec 9.6 ("no pre-loaded knowledge base"),
+  recorded there: arrangements only, no examples, numbers or authors.
+- **Prompt rewritten** from "hard rules" to criteria: the purpose is the
+  requested zone; variety must serve the purpose of the day; steady is right
+  with a reason; the harder the session, the more a touch must earn its place;
+  cadence is one tool among several. It lists exactly what the engine checks.
+- **Intensity resolution with a TSS/IF target** now requires the dominant work
+  as a whole (its time-weighted mean) to land inside the dominant zone, not every
+  single step, so a build through a zone can still hit a target. A step the coach
+  designed past its zone keeps its width.
+- Parser: "recuperación", "activación", "pre-carrera" map to the right zones.
+- `pedir.py` prints the design notes (Spanish and English).
+- Tests: 146 -> 179 (`tests/test_flex_v070.py`); older tests that encoded the
+  removed rules were rewritten to the new behaviour.
+
+### Not changed
+Output grammar, RPE derivation, the load formulas, budget ceiling, user-fixed
+durations, and the engine staying independent of Infame.
 
 ---
 

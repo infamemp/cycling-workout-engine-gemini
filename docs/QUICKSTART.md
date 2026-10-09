@@ -59,13 +59,15 @@ python pedir.py "progresion de sweet spot, inicio 40 min, maximo 90 min"
    búsqueda web activa (siempre lo está) esto toma un poco más, porque el
    motor primero investiga variedad de enfoques y luego estructura la sesión.
 4. El entrenamiento completo aparece en pantalla, en sintaxis de intervals.icu.
-5. Se guarda automáticamente en un archivo `.md` en la misma carpeta
-   (`workout_XXXXXXXX.md` para sesiones, o una carpeta `progression_XXX/` con
-   una sesión por archivo si pediste una progresión).
+5. Se guarda automáticamente en la carpeta `workouts/`, dentro de una
+   subcarpeta según su intención (`tempo/`, `endurance/`, `threshold/`...).
+   Una sesión se llama, por ejemplo, `2026-10-09_power_tempo_45min_382774b5.md`.
+   Una progresión crea su propia carpeta con una sesión por archivo
+   (`session_01.md`, `session_02.md`...). Ver `workouts/README.md`.
 
 ### Subir el entrenamiento a intervals.icu
 
-1. Abre el archivo `.md` generado (con el Bloc de notas, por ejemplo) y copia
+1. Abre el archivo `.md` generado (en `workouts/`) (con el Bloc de notas, por ejemplo) y copia
    todo su contenido.
 2. En intervals.icu, ve a **Workouts → New Workout** (o similar).
 3. Pega el contenido en el editor de workouts — reconoce la sintaxis
@@ -85,7 +87,7 @@ python pedir.py "progresion de sweet spot, inicio 40 min, maximo 90 min"
   [la página de modelos vigentes](https://ai.google.dev/gemini-api/docs/models)
   y actualiza la variable de entorno.
 - **Quieres repetir algo similar a un entrenamiento pasado** → simplemente
-  vuelve a pedirlo; el motor consulta su propio catálogo (`my_catalog.sqlite`)
+  vuelve a pedirlo; el motor consulta su propio catálogo (`workouts/catalog.sqlite`)
   como memoria para razonar variedad, sin que tengas que decirle nada extra.
 
 ---
@@ -144,9 +146,11 @@ python pedir.py "sweet spot progression, start 40 min, max 90 min"
    search on (it always is), this takes a bit longer, since the engine
    researches a range of approaches first and then structures the session.
 4. The complete workout appears on screen, in intervals.icu syntax.
-5. It's automatically saved to a `.md` file in the same folder
-   (`workout_XXXXXXXX.md` for single sessions, or a `progression_XXX/` folder
-   with one session per file if you requested a progression).
+5. It's automatically saved in the `workouts/` folder, in a subfolder for its
+   intention (`tempo/`, `endurance/`, `threshold/`...). A session is named
+   like `2026-10-09_power_tempo_45min_382774b5.md`. A progression gets its own
+   folder with one file per session (`session_01.md`, `session_02.md`...).
+   See `workouts/README.md`.
 
 ### Uploading the workout to intervals.icu
 
@@ -169,5 +173,5 @@ python pedir.py "sweet spot progression, start 40 min, max 90 min"
   [current models page](https://ai.google.dev/gemini-api/docs/models) and
   update the environment variable.
 - **Want something similar to a past workout** → just ask again; the engine
-  consults its own catalog (`my_catalog.sqlite`) as memory to reason variety,
+  consults its own catalog (`workouts/catalog.sqlite`) as memory to reason variety,
   with nothing extra needed from you.

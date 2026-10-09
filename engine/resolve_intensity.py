@@ -22,8 +22,9 @@ closed form once the window is in the formula.
 Known segments (never touched): warmup, prep, cooldown, every recovery step,
 and every complementary (non-dominant) step — their proposed values stand.
 
-Infeasibility (spec 16.3): if the solved intensity falls outside the dominant
-zone's bounds, this is a HARD infeasibility reported with concrete numbers
+Infeasibility (spec 16.3): if the solved intensity of the dominant work (its
+time-weighted mean) falls outside the dominant zone's bounds, this is a HARD
+infeasibility reported with concrete numbers
 (including the closest achievable TSS at the zone edge) — never clamped,
 never silently forced.
 
@@ -149,26 +150,28 @@ def resolve_proposal_intensity(proposal: dict, *, mode: str,
 
     zone = zone_by_name(mode, dominant_zone)
 
-    # Infeasibility check (spec 16.3): EVERY resolved dominant midpoint must
-    # sit inside the dominant zone. Report with the closest achievable TSS.
-    for it in work:
-        mid_pct = it.ratio * x * 100.0
-        if not zone.contains(mid_pct):
-            ratios = [w.ratio for w in work]
-            if zone.high_pct is not None and mid_pct >= zone.high_pct:
-                x_edge = (zone.high_pct / 100.0) / max(ratios)
-            else:
-                x_edge = (zone.low_pct / 100.0) / min(ratios) \
-                    if min(ratios) > 0 else 0.0
-            achievable = tssmod.session_tss(build(x_edge)) if x_edge > 0 else 0.0
-            raise IntensityInfeasible(
-                f"resolved work intensity {mid_pct:.1f}% falls outside the "
-                f"{dominant_zone} zone bounds [{zone.low_pct}"
-                f"-{zone.high_pct if zone.high_pct is not None else 'open'}%] "
-                f"for this structure; the closest achievable session TSS at "
-                f"the zone edge is ~{achievable:.0f}. Adjust the TSS/IF "
-                f"target, the duration, or the structure."
-            )
+    # Infeasibility check (spec 16.3). v0.7.0: the dominant work AS A WHOLE
+    # (its time-weighted mean) has to sit inside the dominant zone; a single
+    # step of a progressive or built effort may sit above or below it. The
+    # report names the closest achievable TSS at the zone edge.
+    total_w = sum(it.seconds for it in work)
+    mean_ratio = sum(it.seconds * it.ratio for it in work) / total_w
+    mid_pct = mean_ratio * x * 100.0
+    if not zone.contains(mid_pct):
+        if zone.high_pct is not None and mid_pct >= zone.high_pct:
+            x_edge = (zone.high_pct / 100.0) / mean_ratio
+        else:
+            x_edge = (zone.low_pct / 100.0) / mean_ratio \
+                if mean_ratio > 0 else 0.0
+        achievable = tssmod.session_tss(build(x_edge)) if x_edge > 0 else 0.0
+        raise IntensityInfeasible(
+            f"resolved work intensity {mid_pct:.1f}% falls outside the "
+            f"{dominant_zone} zone bounds [{zone.low_pct}"
+            f"-{zone.high_pct if zone.high_pct is not None else 'open'}%] "
+            f"for this structure; the closest achievable session TSS at "
+            f"the zone edge is ~{achievable:.0f}. Adjust the TSS/IF "
+            f"target, the duration, or the structure."
+        )
 
     # Rounding (spec 16.4): integer center; keep the proposed width, shrunk
     # symmetrically only as needed to stay inside the zone. Every occurrence
@@ -184,10 +187,16 @@ def resolve_proposal_intensity(proposal: dict, *, mode: str,
         ratio = mid / ref_mid if ref_mid > 0 else 0.0
         center = int(round(ratio * x * 100.0))
         proposed_hw = (st["high_pct"] - st["low_pct"]) / 2.0
-        max_hw = float(center - zone.low_pct)
-        if zone.high_pct is not None:
-            max_hw = min(max_hw, float(zone.high_pct - center))
-        hw = int(max(0.0, min(proposed_hw, max_hw)))
+        was_inside = (st["low_pct"] >= zone.low_pct and
+                      (zone.high_pct is None or st["high_pct"] <= zone.high_pct))
+        if was_inside:
+            max_hw = float(center - zone.low_pct)
+            if zone.high_pct is not None:
+                max_hw = min(max_hw, float(zone.high_pct - center))
+            hw = int(max(0.0, min(proposed_hw, max_hw)))
+        else:
+            # A step the coach designed past its zone keeps its width.
+            hw = int(proposed_hw)
         st["low_pct"] = center - hw
         st["high_pct"] = center + hw
     return adjusted

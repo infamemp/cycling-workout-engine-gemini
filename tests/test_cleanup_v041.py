@@ -37,6 +37,8 @@ def _hr_proposal(stair):
                          "duration_seconds": t[2]})
         else:
             warm.append({"element": "step", "low_pct": t[0] if t else None})
+    if warm and isinstance(warm[-1].get("duration_seconds"), int):
+        warm[-1]["is_preparation"] = True       # v0.7.0: every warmup has one
     return {
         "structural_pattern": "classic_interval",
         "summary": "HR tempo",
@@ -115,6 +117,8 @@ def test_ramps_are_power_only():
     p["main_set"][0]["steps"][1].update(low_pct=50, high_pct=55,
                                         zone_name="ActiveRecovery")
     p["warmup"][0].update(from_pct=45, to_pct=70)
+    p["warmup"].append({"element": "step", "duration_seconds": 60,
+                        "low_pct": 70, "high_pct": 75, "is_preparation": True})
     validate_proposal(p, mode="power", dominant_zone="Tempo")
 
 
@@ -134,12 +138,39 @@ def test_unknown_step_field_rejected():
         validate_proposal(p, mode="hr", dominant_zone="Tempo")
 
 
-def test_nested_repeat_still_reported_as_nested():
+def test_one_level_of_sub_repeat_is_unrolled():
+    from engine.proposal import flatten_nested_repeats
+    p = _hr_proposal([[50, 60, 120], [60, 70, 60]])
+    p["main_set"] = [{"element": "repeat", "repeats": 2, "steps": [
+        {"element": "repeat", "repeats": 3, "steps": [
+            {"duration_seconds": 30, "low_pct": 90, "high_pct": 93,
+             "zone_name": "Tempo"},
+            {"duration_seconds": 30, "low_pct": 70, "high_pct": 80,
+             "zone_name": "Recovery", "is_recovery": True}]},
+        {"element": "step", "duration_seconds": 240, "low_pct": 70,
+         "high_pct": 80, "zone_name": "Recovery", "is_recovery": True}]}]
+    flat = flatten_nested_repeats(p)
+    steps = flat["main_set"][0]["steps"]
+    assert len(steps) == 7 and flat["main_set"][0]["repeats"] == 2
+    assert all("element" not in s for s in steps)
+    validate_proposal(p, mode="hr", dominant_zone="Tempo")   # accepted
+
+
+def test_deeper_nesting_is_rejected():
     p = _hr_proposal([[50, 60, 120]])
-    p["main_set"][0]["steps"].append({"element": "repeat", "repeats": 2,
-                                      "duration_seconds": 60, "low_pct": 90,
-                                      "high_pct": 93, "zone_name": "Tempo"})
-    with pytest.raises(ProposalRejected, match="nested"):
+    p["main_set"] = [{"element": "repeat", "repeats": 2, "steps": [
+        {"element": "repeat", "repeats": 2, "steps": [
+            {"element": "repeat", "repeats": 2, "steps": [
+                {"duration_seconds": 30, "low_pct": 90, "high_pct": 93,
+                 "zone_name": "Tempo"}]}]}]}]
+    with pytest.raises(ProposalRejected, match="more than one level"):
+        validate_proposal(p, mode="hr", dominant_zone="Tempo")
+
+
+def test_sub_repeat_without_steps_is_rejected():
+    p = _hr_proposal([[50, 60, 120]])
+    p["main_set"][0]["steps"].append({"element": "repeat", "repeats": 2})
+    with pytest.raises(ProposalRejected, match="needs 'steps'"):
         validate_proposal(p, mode="hr", dominant_zone="Tempo")
 
 

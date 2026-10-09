@@ -4,7 +4,7 @@ An intelligent, local Python engine that generates indoor cycling workouts —
 single sessions and multi-session progressions — as ready-to-import
 [intervals.icu](https://intervals.icu) workout files (`.md`).
 
-**Version:** 0.6.0
+**Version:** 0.8.0
 **Status:** Core engine functional — no web/app frontend yet (CLI only)
 **License:** Private / All rights reserved (no open-source license applied)
 
@@ -30,7 +30,7 @@ python pedir.py "vo2 max 45 min por frecuencia cardiaca"
 ```
 
 Works in **Spanish or English** — the language is auto-detected from your
-request. See [`QUICKSTART.md`](QUICKSTART.md) for a fast, practical usage
+request. See [`docs/QUICKSTART.md`](docs/QUICKSTART.md) for a fast, practical usage
 guide with copy-paste examples in both languages.
 
 ## Why this exists
@@ -55,10 +55,13 @@ and **physiologically/mechanically correct**.
   decision, out of scope.
 - **Gemini proposes, Python validates.** The reasoning layer (Gemini API +
   `response_schema` structured output + live web search) proposes workout
-  *structure*. The deterministic core validates every proposal against hard
-  rules (zone bounds, no cross-mode mixing, no nested repeats,
-  dominant-stimulus rule, time-budget conservation, TSS-target verification,
-  warmup/cooldown sanity) before accepting it. A rejected proposal is
+  *structure*. The deterministic core validates every proposal before
+  accepting it. It blocks errors, not designs: no cross-mode mixing,
+  believable numbers, easy "recovery", the requested zone present,
+  time-budget conservation, TSS-target verification, warmup (with its
+  preparation interval) and cooldown sanity. Design choices (a step that
+  reaches past its zone, complementary work outweighing the requested zone)
+  are reported as notes and never rejected. A rejected proposal is
   discarded and re-requested — never silently "fixed," never accepted blind.
 - **Web search is for variety, not fact-grounding.** The engine already knows
   exercise physiology; live search exists to surface structural approaches
@@ -191,12 +194,13 @@ Natural-language request ("tempo de 50 minutos")
         │                          (response_schema; two-call research +
         │                          structure pattern when web search is on)
         │
-        ├──► proposal.py       ── validates every proposal against hard rules:
-        │                          zone bounds, no cross-mode mixing, no
-        │                          nested repeats, dominant-stimulus rule,
-        │                          time-budget conservation, TSS-target check,
-        │                          warmup/cooldown sanity (sections.py)
-        │                          (rejects & retries on any violation)
+        ├──► proposal.py       ── validates every proposal: errors reject
+        │                          and retry (cross-mode mixing, impossible
+        │                          numbers, requested zone absent, time
+        │                          budget, TSS-target check, warmup /
+        │                          cooldown sanity in sections.py); design
+        │                          choices come back as notes. One level of
+        │                          sub-repeat is unrolled into its block.
         │
         ├──► sections.py       ── warmup and cooldown, designed per session;
         │                          a requested length adopted exactly
@@ -213,8 +217,8 @@ Natural-language request ("tempo de 50 minutos")
                                    reasoning — never an external knowledge base)
 ```
 
-Full technical specification: [`cycling_workout_generator_specification.md`](cycling_workout_generator_specification.md).
-JSON Schema for requests/sessions: [`workout_engine_schema.json`](workout_engine_schema.json).
+Full technical specification: [`docs/specification.md`](docs/specification.md).
+JSON Schema for requests/sessions: [`docs/workout_engine_schema.json`](docs/workout_engine_schema.json).
 Project history and every locked design decision: [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Project layout
@@ -222,13 +226,26 @@ Project history and every locked design decision: [`CHANGELOG.md`](CHANGELOG.md)
 ```
 cycling-workout-engine-gemini/
 ├── pedir.py                  # natural-language front-end command
+├── README.md  CHANGELOG.md  VERSION  requirements.txt
+├── athlete.example.yaml      # copy to athlete.yaml (git-ignored) for your thresholds
+├── docs/
+│   ├── QUICKSTART.md         # fast, practical usage (ES + EN)
+│   ├── SETUP.md              # no-assumptions install guide
+│   ├── specification.md      # the full technical specification
+│   └── workout_engine_schema.json
+├── workouts/                 # everything generated, filed by intention
+│   ├── README.md             # (the only tracked file in here)
+│   └── tempo/ endurance/ threshold/ ...   # created on first use
 ├── engine/
 │   ├── zones.py              # Friel power/HR zones (fixed data)
 │   ├── rpe.py                # RPE derivation (Borg CR10)
 │   ├── render.py             # intervals.icu syntax + output-validation gate
 │   ├── tss.py                # NP (30 s rolling), HRSS, TSS algebra, solver
 │   ├── athlete_settings.py   # reads athlete.yaml (your thresholds)
+│   ├── storage.py            # where workouts and the catalog are saved
 │   ├── sections.py           # warmup / cooldown: schema, checks, building
+│   ├── shapes.py             # session-shape library loader (ideas for the prompt)
+│   ├── data/shapes.yaml      # 20 shapes + ways they chain; no intensities
 │   ├── catalog.py            # SQLite memory + library
 │   ├── models.py             # request/session dataclasses
 │   ├── structure.py          # conflict detection, offline placeholder main set
@@ -249,7 +266,9 @@ cycling-workout-engine-gemini/
     ├── test_phase2.py        # reasoning-layer integration tests via mock transport
     ├── test_cleanup_v041.py  # HR staircase content, unknown fields, model settings
     ├── test_load_v050.py     # load methods, athlete.yaml
-    └── test_sections_v060.py # designed warmup/cooldown, offline durations
+    ├── test_sections_v060.py # designed warmup/cooldown, offline durations
+    ├── test_flex_v070.py     # flexibility: every kind of session, shape library
+    └── test_storage_v080.py  # workouts filed by intention, tidy repo root
 ```
 
 ## Testing
@@ -258,13 +277,15 @@ cycling-workout-engine-gemini/
 python -m pytest -q
 ```
 
-138 tests, all passing without any API key (a mock transport stands in for
+191 tests, all passing without any API key (a mock transport stands in for
 the real Gemini API). GitHub Actions runs them on every push
 (`.github/workflows/tests.yml`). Coverage includes hand-calculated TSS/IF
 reference cases (NP with the rolling window, HRSS), RPE derivation, output-syntax validation, end-to-end
 generation for both power and heart-rate modes, budget-conservation
 enforcement, TSS-target verification, warmup/cooldown checks,
-unknown-field rejection, and the model settings.
+unknown-field rejection, the model settings, and every kind of session
+(recovery, activation, aerobic with touches, tempo builds, sweet spot with
+surges, over-unders, VO2max micro-intervals, anaerobic, heart-rate sessions).
 
 ## Status & roadmap
 
@@ -274,16 +295,19 @@ unknown-field rejection, and the model settings.
   reasoned (live-researched) ceiling
 - Natural-language request parsing (no need to know internal zone names)
 - Full validation pipeline: zone bounds, budget conservation, TSS-target
-  verification, dominant/subordinate stimulus rule, warmup/cooldown
-  sanity, output-syntax gate
+  verification, requested-zone-present rule, warmup (with preparation
+  interval) and cooldown sanity, output-syntax gate
+- Flexible design: steps may cross zones, complementary work is allowed (and
+  reported), one level of sub-repeat is unrolled, and a 20-shape library is
+  offered to Gemini as ideas, not a menu
 
 **Not yet built:**
 - CP/W′ (Critical Power) calculator — designed in the spec, not yet coded
-- Direct intervals.icu upload (currently produces a `.md` file to import manually)
+- Direct intervals.icu upload (currently produces a `.md` file to import manually, saved in `workouts/<intention>/`)
 - Any web or desktop UI — CLI only, by design, for this phase
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the complete decision history and
-[`cycling_workout_generator_specification.md`](cycling_workout_generator_specification.md)
+[`docs/specification.md`](docs/specification.md)
 for the full spec.
 
 ## Design philosophy in one sentence

@@ -19,7 +19,6 @@ file, and all status messages are shown in whichever language you wrote in.
 
 from __future__ import annotations
 import sys
-import os
 
 from engine.request_parser import parse_request, parse_transport_from_gemini
 from engine.gemini_client import gemini_transport
@@ -28,9 +27,7 @@ from engine.generate_progression import generate_progression
 from engine.models import GenerationRequest
 from engine.catalog import Catalog
 from engine.athlete_settings import load_athlete, SettingsError
-
-
-CATALOG_FILE = "my_catalog.sqlite"
+from engine import storage
 
 # Bilingual UI strings. Keyed by [language]["key"]. Language is auto-detected
 # by the parser from the user's own request text (spec: request_parser.py).
@@ -52,6 +49,7 @@ _STRINGS = {
         "all_saved_in": "Todas las sesiones guardadas en la carpeta:",
         "load_typical": "(aproximado: faltan LTHR, FC maxima o FC de reposo en athlete.yaml)",
         "settings_error": "Revisa athlete.yaml:",
+        "design_notes": "Notas de diseño:",
     },
     "en": {
         "usage_examples": "Examples:",
@@ -70,6 +68,7 @@ _STRINGS = {
         "all_saved_in": "All sessions saved in folder:",
         "load_typical": "(approximate: LTHR, max HR or resting HR missing in athlete.yaml)",
         "settings_error": "Check athlete.yaml:",
+        "design_notes": "Design notes:",
     },
 }
 
@@ -135,7 +134,7 @@ def main() -> int:
         athlete=athlete,
     )
 
-    catalog = Catalog(CATALOG_FILE)
+    catalog = Catalog(str(storage.catalog_path()))
     gen_t = gemini_transport()
 
     # 3) Generate (single session or full progression).
@@ -166,10 +165,19 @@ def _show_session(sess, S: dict) -> None:
     print(sess.markdown_output)
     print(f"\n{S['estimated_tss']} {sess.estimated_tss}  |  IF: {sess.estimated_if}"
           + (f"  {S['load_typical']}" if sess.tss_method == "hrss_typical" else ""))
-    fname = f"workout_{sess.id}.md"
-    with open(fname, "w", encoding="utf-8") as f:
-        f.write(sess.markdown_output)
-    print(f"{S['saved_to']} {fname}")
+    _show_notes(sess, S)
+    path = storage.save_session(sess)
+    print(f"{S['saved_to']} {storage.shown(path)}")
+
+
+def _show_notes(sess, S: dict) -> None:
+    """Design observations from validation (a step past its zone, most of the
+    work outside the requested zone): information for the coach, not errors."""
+    notes = getattr(sess, "warnings", None) or []
+    if notes:
+        print(f"\n{S['design_notes']}")
+        for n in notes:
+            print(f"  - {n}")
 
 
 def _show_progression(result, S: dict) -> None:
@@ -178,18 +186,15 @@ def _show_progression(result, S: dict) -> None:
     if result.graduation_note:
         print(f"{S['graduation']} {result.graduation_note}")
     print()
-    folder = f"progression_{result.progression_id}"
-    os.makedirs(folder, exist_ok=True)
     for i, sess in enumerate(result.sessions, start=1):
         approx = " ~" if sess.tss_method == "hrss_typical" else ""
         print(f"--- {S['session_word']} {i}/{len(result.sessions)}  "
               f"(TSS{approx} {sess.estimated_tss}) ---")
         print(sess.markdown_output)
+        _show_notes(sess, S)
         print()
-        fname = os.path.join(folder, f"session_{i:02d}.md")
-        with open(fname, "w", encoding="utf-8") as f:
-            f.write(sess.markdown_output)
-    print(f"{S['all_saved_in']} {folder}")
+    folder = storage.save_progression(result)
+    print(f"{S['all_saved_in']} {storage.shown(folder)}")
 
 
 if __name__ == "__main__":

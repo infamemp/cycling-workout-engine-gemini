@@ -25,7 +25,7 @@ def _W(ramp_s=600, steady_s=0):
           "from_pct": 45, "to_pct": 75}]
     if steady_s:
         w.append({"element": "step", "duration_seconds": steady_s,
-                  "low_pct": 45, "high_pct": 55})
+                  "low_pct": 45, "high_pct": 55, "is_preparation": True})
     return w
 
 
@@ -35,8 +35,10 @@ def _C(seconds=300):
 
 
 def _WHR(stair):
-    return [{"element": "step", "duration_seconds": sec,
-             "low_pct": lo, "high_pct": hi} for lo, hi, sec in stair]
+    out = [{"element": "step", "duration_seconds": sec,
+            "low_pct": lo, "high_pct": hi} for lo, hi, sec in stair]
+    out[-1]["is_preparation"] = True       # v0.7.0: the last step prepares
+    return out
 
 
 def _CHR(seconds=300):
@@ -157,14 +159,14 @@ def test_hr_proposal_uses_staircase_and_lthr():
     assert warmup_section.count("% LTHR") == 3
 
 
-def test_complementary_cannot_dominate():
+def test_complementary_dominating_is_a_warning_not_a_rejection():
+    # v0.7.0: how much of the work sits in the requested zone is the coach's
+    # design. The session is built and the athlete is told.
     req = GenerationRequest(kind="single_session", mode="power",
                             requested_zone="Tempo")
-    try:
-        generate_single_v2(req, transport=mock_complementary_dominates)
-        assert False, "expected rejection"
-    except ProposalRejected:
-        pass
+    sess = generate_single_v2(req, transport=mock_complementary_dominates)
+    assert any("outside Tempo" in w for w in sess.warnings)
+    assert sess.complementary_zones == ["VO2Max"]
 
 
 def test_cross_mode_zone_rejected():
@@ -378,7 +380,7 @@ def test_tss_target_close_is_accepted():
     assert abs(sess.estimated_tss - 41) / 41 < 0.15  # within tolerance
 
 
-def test_undeclared_complementary_zone_rejected():
+def test_undeclared_complementary_zone_is_derived():
     from engine.proposal import validate_proposal, ProposalRejected
     bad = {
         "structural_pattern": "classic_interval", "summary": "undeclared",
@@ -388,11 +390,9 @@ def test_undeclared_complementary_zone_rejected():
             {"duration_seconds": 30, "low_pct": 108, "high_pct": 115, "zone_name": "VO2Max"},
         ]}],
     }
-    try:
-        validate_proposal(bad, mode="power", dominant_zone="Tempo")
-        assert False, "expected rejection: VO2Max used but not declared"
-    except ProposalRejected:
-        pass
+    from engine.proposal import derive_complementary_zones
+    validate_proposal(bad, mode="power", dominant_zone="Tempo")  # no error
+    assert derive_complementary_zones(bad, "Tempo") == ["VO2Max"]
 
 
 # ============================================================
@@ -717,9 +717,9 @@ def test_c3_overdetermined_inconsistent_reported():
 # A1 / M3 / m3: zone containment, clean rejections, recovery ceiling
 # ============================================================
 
-def test_a1_zone_spill_rejected():
-    """A1: a 'Tempo' interval spanning into Threshold/VO2 must be rejected —
-    containment, not mere overlap."""
+def test_a1_zone_spill_is_noted_not_rejected():
+    """v0.7.0 (was A1): a 'Tempo' step reaching past the zone is a design
+    choice — a build, a surge. It is reported as a warning."""
     from engine.proposal import validate_proposal, ProposalRejected
     for lo, hi in ((75, 105), (60, 76), (74, 90)):
         bad = {"structural_pattern": "continuous", "summary": "spill",
@@ -727,11 +727,8 @@ def test_a1_zone_spill_rejected():
                "main_set": [{"element": "step", "duration_seconds": 1200,
                              "low_pct": lo, "high_pct": hi,
                              "zone_name": "Tempo"}]}
-        try:
-            validate_proposal(bad, mode="power", dominant_zone="Tempo")
-            assert False, f"expected rejection for {lo}-{hi}% Tempo"
-        except ProposalRejected:
-            pass
+        warns = validate_proposal(bad, mode="power", dominant_zone="Tempo")
+        assert any("past the zone" in w for w in warns), (lo, hi)
 
 
 def test_a1_full_zone_range_accepted():
@@ -825,12 +822,12 @@ def test_a4_feedback_reaches_second_attempt():
 
     def transport(system, user, tools, web):
         prompts.append(user)
-        if len(prompts) == 1:  # first: zone-spill -> rejected (A1)
+        if len(prompts) == 1:  # first: an HR-only zone in power mode
             return {"structural_pattern": "continuous", "summary": "bad",
                     "warmup": _W(300, 60), "cooldown": _C(120),
                     "main_set": [{"element": "step", "duration_seconds": 1200,
-                                  "low_pct": 75, "high_pct": 105,
-                                  "zone_name": "Tempo"}]}
+                                  "low_pct": 94, "high_pct": 99,
+                                  "zone_name": "SubThreshold"}]}
         return {"structural_pattern": "continuous", "summary": "fixed",
                 "warmup": _W(300, 60), "cooldown": _C(120),
                 "main_set": [{"element": "step", "duration_seconds": 1200,
@@ -842,7 +839,7 @@ def test_a4_feedback_reaches_second_attempt():
     sess = generate_single_v2(req, transport=transport)
     assert len(prompts) == 2
     assert "REJECTED" not in prompts[0]
-    assert "REJECTED" in prompts[1] and "not contained" in prompts[1]
+    assert "REJECTED" in prompts[1] and "not valid in power" in prompts[1]
     assert sess.estimated_tss > 0
 
 

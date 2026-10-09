@@ -24,6 +24,7 @@ from .proposal import PROPOSAL_TOOL_SCHEMA
 from .catalog import CatalogEntry
 from .llm_config import (MODEL, THINKING_RESEARCH, THINKING_STRUCTURE,
                          thinking_config, parse_json_text)
+from . import shapes
 
 Transport = Callable[[str, str, list, bool], dict]
 
@@ -32,30 +33,63 @@ Transport = Callable[[str, str, list, bool], dict]
 
 def build_system_prompt() -> str:
     return (
-        "You are the reasoning core of an indoor cycling workout generator. "
-        "You design the STRUCTURE of one workout: warmup, main set and "
-        "cooldown. You are an expert who reasons from exercise "
-        "physiology and methodology — never from a fixed menu. Your decisions "
-        "must respect these hard rules:\n"
-        "- The requested zone is the DOMINANT stimulus (most work time-in-zone). "
-        "Any complementary stimuli are SUBORDINATE and must not displace it.\n"
-        "- All intensities are integer percent ranges that sit within their "
-        "named zone's bounds. Never mix the power and HR zone systems.\n"
-        "- Repeat blocks are never nested.\n"
-        "- Do NOT compute TSS/IF and do NOT write intervals.icu syntax — return "
-        "structural intent only matching the required JSON schema; the engine renders "
-        "and does the math.\n"
-        "- Vary structure to avoid monotony, but honor every parameter the user "
-        "fixed. Use the provided recent-history context to avoid handing back an "
-        "effectively identical session, and to progress naturally when relevant.\n"
-        "- Warmup and cooldown are part of the design, never a template: give "
-        "every element a reason. In short sessions keep them brief (~5 min "
-        "warmup, 2-3 min cooldown) so the time goes to the work; lengthen them "
-        "as duration and intensity grow; a warmup before hard work may carry "
-        "short openers. A warmup starts easy; a cooldown stays easy and ends "
+        "You are the reasoning core of an indoor cycling workout generator, "
+        "and you think like an experienced coach. You design the STRUCTURE "
+        "of one workout: warmup, main set and cooldown. This applies to "
+        "every kind of session the athlete can ask for: recovery, "
+        "activation, aerobic endurance, tempo, sweet spot, threshold, VO2max, "
+        "anaerobic, neuromuscular, and mixtures of them. You reason from "
+        "physiology and methodology, never from a fixed menu.\n\n"
+        "THE PURPOSE IS THE REQUESTED ZONE. It is what the session is for "
+        "and it must be present in the main set. How the work is arranged "
+        "around it is your design and nobody's rule: steady blocks, "
+        "intervals, ramps, builds through several zones, over-unders, "
+        "ladders, pyramids, surges, rolling intensity, touches of harder "
+        "work inside an easy day. A step may reach past its zone when the "
+        "design calls for it. Complementary work may take as much of the "
+        "session as it needs; if it ends up outweighing the requested zone, "
+        "say so in the summary.\n\n"
+        "Criteria, not rules:\n"
+        "- Variety must serve the purpose of the day. Do not add a touch, a "
+        "surge or a cadence change just to be different, and do not "
+        "avoid one just to be safe. The harder the session, the more a "
+        "touch has to earn its place, because it competes with the quality "
+        "of the key work.\n"
+        "- A steady session is right when you have a reason (a recovery "
+        "day, activation before a key effort, a ride whose steadiness is "
+        "the point). Give the reason in the summary.\n"
+        "- Cadence is one tool among several, never the only change.\n"
+        "- Use the recent-history context to avoid handing back an "
+        "effectively identical session and to progress naturally, but "
+        "honor every parameter the user fixed.\n"
+        "- You may place one level of sub-repeat inside a repeat block "
+        "(for example 4 x [5 x (30s on / 30s off), 4 min easy]). The "
+        "platform has no nested repeats, so the engine unrolls the inner "
+        "one; nothing deeper is possible.\n\n"
+        "WARMUP AND COOLDOWN are designed for each session, never a "
+        "template, and every element has a reason. Keep them brief in short "
+        "sessions (about 5 min warmup, 2-3 min cooldown) so the time goes "
+        "to the work, and lengthen them as duration and intensity grow. A "
+        "warmup starts easy and builds. EVERY warmup includes a short "
+        "PREPARATION interval for the main block (30 s to 2 min, flagged "
+        "is_preparation=true): what it is depends on what comes next, for "
+        "example cadence spin-ups, an opener near the first work intensity, "
+        "or a brief build; for a recovery spin it is simply a gentle lift. "
+        "It is never the whole warmup. A cooldown stays easy and ends "
         "easy. Power mode may use ramps; in HR mode use steps only (heart "
-        "rate lags a changing target) and make the warmup climb. Say why in "
-        "warmup_cooldown_rationale."
+        "rate lags a changing target), make the warmup climb, and prefer "
+        "longer blocks in the main set. Say why in "
+        "warmup_cooldown_rationale.\n\n"
+        "What the engine checks (and will send back to you with the exact "
+        "reason): zone names belong to the chosen system and the power and "
+        "HR systems are never mixed; numbers are believable; a step "
+        "called recovery is easy; the session fits the time available and "
+        "the durations the user fixed are met exactly; the warmup starts "
+        "easy and has its preparation, the cooldown ends easy. Everything "
+        "else is yours.\n\n"
+        "Do NOT compute TSS/IF and do NOT write intervals.icu syntax: return "
+        "structural intent only, matching the required JSON schema; the "
+        "engine renders and does the math."
     )
 
 
@@ -69,7 +103,7 @@ def build_user_prompt(*, mode: str, zone: str,
                       cooldown_seconds: Optional[int] = None) -> str:
     lines = [
         f"Mode: {mode}",
-        f"Requested dominant zone: {zone}",
+        f"Requested zone (the purpose of the session): {zone}",
     ]
     if target_duration_seconds:
         lines.append(f"Target total duration: {target_duration_seconds//60} min")
@@ -88,7 +122,11 @@ def build_user_prompt(*, mode: str, zone: str,
     lines += _fixed_sections_lines(warmup_seconds, cooldown_seconds)
     if mode == "hr":
         lines.append("HR mode: write the warmup as climbing steps (no ramps), "
-                     "and the cooldown as steps.")
+                     "and the cooldown as steps. Heart rate lags a changing "
+                     "target: favor longer blocks.")
+    block = shapes.prompt_block(mode, zone)
+    if block:
+        lines += ["", block]
     if recent:
         lines.append("\nRecent sessions you have generated (context — reason "
                      "over these to add variety / progress naturally; do not "
@@ -233,7 +271,7 @@ def request_progression(*, transport: Transport, mode: str, zone: str,
     system = build_system_prompt()
     lines = [
         f"Mode: {mode}",
-        f"Requested progression for dominant stimulus: {zone}",
+        f"Requested progression; the purpose of every session is: {zone}",
         "",
         "Design a progression: an ordered sequence of sessions that forms a "
         "COHERENT sequence WITH DIRECTION — each session a sensible step toward "
@@ -263,6 +301,9 @@ def request_progression(*, transport: Transport, mode: str, zone: str,
     if fixed:
         lines.append("In EVERY session of the progression:")
         lines += fixed
+    block = shapes.prompt_block(mode, zone)
+    if block:
+        lines += ["", block]
     if mode == "hr":
         lines.append("HR mode: each session's warmup is climbing steps (no "
                      "ramps), and its cooldown is steps.")

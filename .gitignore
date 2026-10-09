@@ -23,6 +23,10 @@ my_catalog.sqlite
 workout_*.md
 progression_prog_*/
 
+# --- Generated workouts (personal). Only the folder's README is tracked. ---
+workouts/*
+!workouts/README.md
+
 # --- IDE / editor ---
 .vscode/
 .idea/

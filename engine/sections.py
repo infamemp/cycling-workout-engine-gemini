@@ -20,11 +20,19 @@ Hard checks here are physiological sanity and arithmetic only, never a
 template: a warmup starts easy; a cooldown stays easy and ends easy; both
 stay within a sanity length unless the user asked for more.
 
+A warmup always carries a PREPARATION interval (v0.7.0): a short step or
+ramp (30 s to 2 min) flagged "is_preparation": true that readies the body
+for the main block. What it is — a few cadence spin-ups, an opener near
+the first work intensity, a short build — is the coach's design; that it is
+there is not optional. A warmup of two minutes or more cannot be only the
+preparation.
+
 A section is a list of elements, the same shape as the main set plus a ramp:
     {"element": "step",  "duration_seconds", "low_pct", "high_pct",
-                         ["cadence_low", "cadence_high"]}
+                         ["cadence_low", "cadence_high", "is_preparation"]}
     {"element": "ramp",  "duration_seconds", "from_pct", "to_pct",
-                         ["cadence_low", "cadence_high"]}        (power only)
+                         ["cadence_low", "cadence_high", "is_preparation"]}
+                                                                  (power only)
     {"element": "repeat", "repeats", "steps": [step, ...]}       (no nesting)
 """
 
@@ -48,10 +56,15 @@ EASY_START = {"power": 65, "hr": 80}
 COOLDOWN_CEILING = {"power": 75, "hr": 89}
 EASY_END = {"power": 65, "hr": 80}
 
+# Preparation interval (warmup only), seconds.
+PREP_MIN_SECONDS = 30
+PREP_MAX_SECONDS = 120
+PREP_NOT_WHOLE_FROM = 120   # from this warmup length the prep is not all of it
+
 _STEP_KEYS = {"element", "duration_seconds", "low_pct", "high_pct",
-              "cadence_low", "cadence_high"}
+              "cadence_low", "cadence_high", "is_preparation"}
 _RAMP_KEYS = {"element", "duration_seconds", "from_pct", "to_pct",
-              "cadence_low", "cadence_high"}
+              "cadence_low", "cadence_high", "is_preparation"}
 _REPEAT_KEYS = {"element", "repeats", "steps"}
 _INNER_KEYS = {"duration_seconds", "low_pct", "high_pct", "cadence_low",
                "cadence_high"}
@@ -73,6 +86,11 @@ SECTION_SCHEMA = {
                        "description": "ramp only: end of the ramp"},
             "cadence_low": {"type": "integer"},
             "cadence_high": {"type": "integer"},
+            "is_preparation": {
+                "type": "boolean",
+                "description": "WARMUP ONLY. Mark the short (30 s - 2 min) "
+                               "step or ramp that prepares the body for the "
+                               "main block. Every warmup has one."},
             "repeats": {"type": "integer", "minimum": 1},
             "steps": {
                 "type": "array", "minItems": 1,
@@ -134,6 +152,37 @@ def section_seconds(elements: list) -> int:
         else:
             total += el["duration_seconds"]
     return total
+
+
+def _check_preparation(elements: list, total: int) -> None:
+    flagged = []
+    for i, el in enumerate(elements):
+        v = el.get("is_preparation")
+        if v is None or v is False:
+            continue
+        if v is not True:
+            raise SectionRejected(
+                f"warmup element {i}: is_preparation must be true or false")
+        if el.get("element") not in ("step", "ramp"):
+            raise SectionRejected(
+                f"warmup element {i}: the preparation is a step or a ramp, "
+                f"not a repeat block")
+        flagged.append(el)
+    if not flagged:
+        raise SectionRejected(
+            "the warmup has no preparation interval — mark one step or ramp "
+            f"of {PREP_MIN_SECONDS} s to {PREP_MAX_SECONDS // 60} min with "
+            "is_preparation: true; it readies the body for the main block")
+    for el in flagged:
+        d = el["duration_seconds"]
+        if not PREP_MIN_SECONDS <= d <= PREP_MAX_SECONDS:
+            raise SectionRejected(
+                f"the preparation interval lasts {d}s — keep it short, "
+                f"between {PREP_MIN_SECONDS}s and {PREP_MAX_SECONDS}s")
+    if total >= PREP_NOT_WHOLE_FROM and sum(
+            el["duration_seconds"] for el in flagged) >= total:
+        raise SectionRejected(
+            "the preparation cannot be the whole warmup — build up to it")
 
 
 def validate_section(kind: str, elements, *, mode: str,
@@ -206,6 +255,9 @@ def validate_section(kind: str, elements, *, mode: str,
                     "step down — heart rate needs each level to settle")
         cap = WARMUP_MAX_SECONDS
     else:
+        if any(el.get("is_preparation") for el in elements):
+            raise SectionRejected(
+                "cooldown: 'is_preparation' belongs to the warmup only")
         top = max(max(a, b) for a, b in values)
         if top > COOLDOWN_CEILING[mode]:
             raise SectionRejected(
@@ -227,6 +279,8 @@ def validate_section(kind: str, elements, *, mode: str,
         raise SectionRejected(
             f"{kind} of {total // 60} min is over the {cap // 60} min sanity "
             f"limit — size it to the session")
+    if kind == "warmup":
+        _check_preparation(elements, total)
     return total
 
 
@@ -302,21 +356,39 @@ def default_sections(mode: str, total_seconds: Optional[int],
                      cooldown_seconds: Optional[int] = None) -> tuple[list, list]:
     """Simple sections for the deterministic offline generator, which has no
     reasoning layer: ~5 min warmup and 3 min cooldown up to 45-min sessions,
-    10 and 5 beyond. A requested duration is used as given."""
+    10 and 5 beyond. A requested duration is used as given. The warmup ends
+    with a short preparation interval (60 s, 90 s in longer warmups)."""
     short = total_seconds is not None and total_seconds <= 45 * 60
     w = warmup_seconds or (300 if short else 600)
     c = cooldown_seconds or (180 if short else 300)
+    prep = 60 if w <= 300 else 90
+    rest = w - prep
     if mode == "power":
-        warm = [{"element": "ramp", "duration_seconds": w,
-                 "from_pct": 45, "to_pct": 70}]
+        if rest <= 0:
+            warm = [{"element": "step", "duration_seconds": w,
+                     "low_pct": 60, "high_pct": 70, "is_preparation": True}]
+        else:
+            warm = [{"element": "ramp", "duration_seconds": rest,
+                     "from_pct": 45, "to_pct": 65},
+                    {"element": "step", "duration_seconds": prep,
+                     "low_pct": 70, "high_pct": 75, "is_preparation": True}]
         cool = [{"element": "ramp", "duration_seconds": c,
                  "from_pct": 65, "to_pct": 45}]
     else:
-        n = 3 if w >= 180 else 1
-        base, rem = divmod(w, n)
-        warm = [{"element": "step", "duration_seconds": base + (rem if i == n - 1 else 0),
-                 "low_pct": lo, "high_pct": lo + 8}
-                for i, lo in enumerate((60, 68, 76)[:n])]
+        if rest <= 0:
+            warm = [{"element": "step", "duration_seconds": w,
+                     "low_pct": 70, "high_pct": 78, "is_preparation": True}]
+        else:
+            m = 2 if rest >= 240 else 1
+            base, extra = divmod(rest, m)
+            levels = (60, 68)[:m]
+            warm = [{"element": "step",
+                     "duration_seconds": base + (extra if i == m - 1 else 0),
+                     "low_pct": lo, "high_pct": lo + 8}
+                    for i, lo in enumerate(levels)]
+            warm.append({"element": "step", "duration_seconds": prep,
+                         "low_pct": 76, "high_pct": 84,
+                         "is_preparation": True})
         cool = [{"element": "step", "duration_seconds": c,
                  "low_pct": 65, "high_pct": 75}]
     return warm, cool

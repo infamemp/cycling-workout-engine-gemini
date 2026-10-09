@@ -1,0 +1,228 @@
+# shapes.yaml — the engine's library of session shapes (v0.7.0).
+#
+# IDEAS, NOT A MENU. A shape is a way the work of a session can be arranged;
+# it carries no intensities and no durations. Nothing here is a quota, none is
+# the default, and the reasoning layer is free to combine them or to invent
+# its own. Intensities always come from the zone tables; the library only
+# widens what the reasoning layer thinks of. The order is not a ranking.
+#
+# Fields:
+#   name        slug
+#   idea        what the shape is and what it trains (shown to the model)
+#   suits       the purposes (classes) it usually serves; a hint, not a rule
+#   levers      what can change from week to week without changing the shape
+#   disciplines where it applies today; "run" is listed where the shape also
+#               exists in running, ready for the day the engine writes runs
+#
+# Classes: recovery, endurance, tempo, sub_threshold (sweet spot), threshold,
+# vo2max, anaerobic, neuromuscular.
+
+shapes:
+  - name: steady_aerobic
+    idea: >
+      One continuous effort, or a few blocks at different points of the
+      aerobic zone. Simple is a decision that needs a reason: a recovery day,
+      activation before a key day or a race, a ride whose steadiness is the
+      point (drift or efficiency being tracked), early base. Without such a
+      reason an aerobic session is better built with touches, rolling or a
+      progression.
+    suits: [recovery, endurance]
+    levers: [duration, blocks]
+    disciplines: [bike, run]
+
+  - name: aerobic_touches
+    idea: >
+      An aerobic session whose purpose and most of whose load stay aerobic,
+      with small doses of harder work inside it: a tempo or sweet-spot block,
+      short threshold or VO2max efforts, bursts or sprints. The touches keep
+      the session alive and rehearse other gears; they do not change what the
+      session is for. Where they go is a design choice (early while fresh,
+      late on tired legs, spread through the ride) and the harder the
+      session, the more a touch has to earn its place.
+    suits: [recovery, endurance, tempo]
+    levers: [touch_count, touch_length, touch_intensity]
+    disciplines: [bike, run]
+
+  - name: rolling_aerobic
+    idea: >
+      Continuous aerobic work whose intensity keeps moving, like rolling
+      terrain or a group ride: it drifts between the low and the high part of
+      the zone and rises briefly into tempo, with no recovery steps and no
+      stops. The whole session undulates, unlike touches on a steady base.
+    suits: [endurance, tempo]
+    levers: [amplitude, rise_length]
+    disciplines: [bike, run]
+
+  - name: progressive_blocks
+    idea: >
+      One continuous ride split into two or three blocks, each a little
+      higher than the last, with no recovery between them: it starts easy and
+      finishes equal or stronger, never softer. Trains finishing well on tired
+      legs and even or negative pacing.
+    suits: [endurance, tempo, sub_threshold, threshold]
+    levers: [blocks, step_size]
+    disciplines: [bike, run]
+
+  - name: sustained_effort
+    idea: >
+      One continuous block at a single target, no internal structure. Builds
+      the ability to hold a power without the relief of a recovery. The shape
+      behind the classic tempo, sweet-spot and threshold rides.
+    suits: [endurance, tempo, sub_threshold, threshold, vo2max]
+    levers: [duration, intensity]
+    disciplines: [bike, run]
+
+  - name: classic_intervals
+    idea: >
+      N identical work bouts separated by easy recovery. Isolates one stimulus
+      cleanly and lets the athlete repeat the same target. It is what to fall
+      back on when nothing else is chosen, which is why it should be chosen
+      on purpose and not by habit.
+    suits: [tempo, sub_threshold, threshold, vo2max, anaerobic, neuromuscular]
+    levers: [reps, bout_length, recovery_length, intensity]
+    disciplines: [bike, run]
+
+  - name: progressive_intervals
+    idea: >
+      Reps of the same length, each harder than the last (or, mirrored, each
+      easier). Trains pacing a set that gets harder as fatigue builds.
+    suits: [tempo, sub_threshold, threshold, vo2max]
+    levers: [reps, step_size]
+    disciplines: [bike, run]
+
+  - name: duration_ladder
+    idea: >
+      Reps whose length moves in one direction only, longer each time or
+      shorter each time, with recovery between. The longest rep can come
+      first, while fresh, or last, as a build. Intensity may stay fixed or
+      move with the duration.
+    suits: [tempo, sub_threshold, threshold, vo2max]
+    levers: [rungs, rung_length, intensity]
+    disciplines: [bike, run]
+
+  - name: pyramid
+    idea: >
+      Reps whose length (or intensity) rises to a peak rep and then falls back
+      symmetrically. Once the descent starts the athlete knows the hardest
+      part is behind.
+    suits: [tempo, sub_threshold, threshold, vo2max]
+    levers: [peak_length, rungs]
+    disciplines: [bike, run]
+
+  - name: stepped_build
+    idea: >
+      Each rep climbs through several steps of rising intensity with no
+      recovery between steps (for example tempo, then sweet spot, then
+      threshold), then a full recovery, then the whole climb again. Builds
+      tolerance to intensity that accumulates inside one effort.
+    suits: [tempo, sub_threshold, threshold, vo2max]
+    levers: [steps, top_step, reps]
+    disciplines: [bike, run]
+
+  - name: hard_start_fading
+    idea: >
+      The inverse of a build: each rep opens at its hardest and steps down
+      without recovery. Trains starting hard and holding on as it fades, or
+      going off the front and settling. A short spike opening a sweet-spot
+      interval is the same idea at small scale.
+    suits: [sub_threshold, threshold, vo2max, anaerobic]
+    levers: [spike_length, steps, reps]
+    disciplines: [bike]
+
+  - name: over_unders
+    idea: >
+      Alternating just above and just below threshold with no real recovery
+      between the two: the under is still working, only easier. Trains
+      clearing lactate while still producing power, like pace that surges
+      above threshold and settles only part of the way down.
+    suits: [threshold, vo2max]
+    levers: [reps, segment_length, gap_between_over_and_under]
+    disciplines: [bike, run]
+
+  - name: surges_on_base
+    idea: >
+      A sustained base (tempo, sweet spot or threshold) with short, much
+      harder bursts layered inside it and no easy recovery after them: the
+      athlete goes straight back to the base. Simulates race accelerations
+      out of a paceline or on a climb. When the base is the purpose, the
+      bursts are touches; when the bursts are the point of the day, it is a
+      surge session.
+    suits: [tempo, sub_threshold, threshold, anaerobic]
+    levers: [burst_count, burst_length, burst_intensity]
+    disciplines: [bike, run]
+
+  - name: climb_simulation
+    idea: >
+      A short ramp up into a harder punch at the top, repeated across several
+      climbs of different lengths and cadences, each followed by a descent
+      style recovery. Simulates cresting a climb, not only a progressive
+      effort.
+    suits: [threshold, vo2max, anaerobic]
+    levers: [climbs, climb_length, punch_length]
+    disciplines: [bike]
+
+  - name: single_ramp
+    idea: >
+      The work bout itself is a ramp: power rises continuously through the
+      effort instead of holding one number, so there is never a pace to
+      settle into. Power mode only (heart rate lags a ramp).
+    suits: [tempo, sub_threshold, threshold, vo2max, anaerobic]
+    levers: [duration, start, end, tail_hold]
+    disciplines: [bike]
+
+  - name: descending_ramp
+    idea: >
+      A single bout whose target falls steadily through the effort: it starts
+      at the hardest point while fresh and eases as fatigue builds. The mirror
+      of a ramp up, and a different thing to train. Power mode only.
+    suits: [threshold, vo2max]
+    levers: [duration, start, end]
+    disciplines: [bike]
+
+  - name: sprints
+    idea: >
+      Very short (30 s or less) maximal bouts with long full recovery.
+      Neuromuscular power and technique, not aerobic load. Recovery has to stay
+      long enough for quality to hold from rep to rep.
+    suits: [neuromuscular, anaerobic]
+    levers: [reps, recovery_length]
+    disciplines: [bike, run]
+
+  - name: cadence_contrast
+    idea: >
+      The same power target, alternating cadence (for example 60 rpm and
+      95 rpm blocks). The stimulus is muscular and technical, not metabolic:
+      intensity barely moves, the pedalling demand does. Cycling only.
+    suits: [endurance, tempo, sub_threshold]
+    levers: [block_length, cadence_gap]
+    disciplines: [bike]
+
+  - name: activation_openers
+    idea: >
+      A short, easy session the day before a key effort or a race, kept
+      light on load: easy riding with a few brief efforts (for example two
+      to five of 30 to 60 s near tempo or threshold, or two short sprints)
+      with full recovery, so the legs are awake and not tired.
+    suits: [recovery, endurance]
+    levers: [effort_count, effort_length]
+    disciplines: [bike, run]
+
+  - name: technique_drills
+    idea: >
+      A session whose purpose is skill, not load: pedalling drills (spin-ups,
+      isolated leg, high cadence). Only when the athlete asks for it; the step
+      targets stay easy and the cue names the drill.
+    suits: [recovery, endurance]
+    levers: [drill_sets]
+    disciplines: [bike, run]
+
+# Ways shapes chain. Not shapes themselves.
+combinations:
+  - name: pre_fatigue_into_key_work
+    idea: a short easier shape first, then the main shape at full target
+  - name: key_work_into_finisher
+    idea: the main shape, then a short different shape once the key work is done
+  - name: two_distinct_sets
+    idea: shape A as a full set, a full recovery block, then shape B as a full set
+  - name: sandwich
+    idea: an easy-to-moderate bookend, a harder block in the middle, the bookend again

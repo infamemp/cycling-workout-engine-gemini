@@ -19,7 +19,8 @@ from . import assembler
 from .catalog import Catalog, CatalogEntry
 from .gemini_client import Transport, request_progression
 from .progression import validate_progression
-from .proposal import ProposalRejected
+from .proposal import (ProposalRejected, flatten_nested_repeats,
+                       derive_complementary_zones)
 from .build_from_proposal import build_main_set
 from .sections import build_section
 
@@ -61,6 +62,7 @@ def generate_progression(req: GenerationRequest, *,
     # engine researches and grows toward the physiological ceiling itself.
     last_error: Optional[str] = None
     progression: Optional[dict] = None
+    session_warnings: list[list[str]] = []
     for _ in range(_MAX_RETRIES):
         candidate = request_progression(
             transport=transport, mode=req.mode, zone=req.requested_zone,
@@ -72,6 +74,10 @@ def generate_progression(req: GenerationRequest, *,
             cooldown_seconds=req.cooldown_seconds,
         )
         try:
+            # Sub-repeats are unrolled into their blocks (the platform has
+            # no nested repeats) before anything is validated or built.
+            candidate["sessions"] = [flatten_nested_repeats(x)
+                                     for x in candidate.get("sessions") or []]
             sessions_raw = candidate.get("sessions") or []
             n = len(sessions_raw)
             session_budgets = [
@@ -85,7 +91,7 @@ def generate_progression(req: GenerationRequest, *,
                 (i == 0 and initial_session_seconds is not None)
                 for i in range(n)
             ]
-            validate_progression(candidate, mode=req.mode,
+            session_warnings = validate_progression(candidate, mode=req.mode,
                                  dominant_zone=req.requested_zone,
                                  session_budgets=session_budgets,
                                  session_floor_flags=floor_flags,
@@ -118,8 +124,8 @@ def generate_progression(req: GenerationRequest, *,
         sid = str(uuid.uuid4())[:8]
         summary = sess_proposal.get("summary",
                                     f"{req.requested_zone} session {idx}")
-        complementary = [c["zone"]
-                         for c in sess_proposal.get("complementary_stimuli", [])]
+        complementary = derive_complementary_zones(sess_proposal,
+                                                   req.requested_zone)
 
         session = GeneratedSession(
             id=sid, generated_at=CatalogEntry.now_iso(), mode=req.mode,
@@ -132,6 +138,8 @@ def generate_progression(req: GenerationRequest, *,
             summary=f"[{idx}/{len(progression['sessions'])}] {summary}",
             markdown_output=markdown, progression_id=prog_id,
             tss_method=load.method,
+            warnings=list(session_warnings[idx - 1])
+            if idx - 1 < len(session_warnings) else [],
         )
         sessions.append(session)
 
